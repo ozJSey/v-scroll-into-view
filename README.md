@@ -1,6 +1,6 @@
-### [@ozjsey/v-scroll-into-view](https://www.npmjs.com/package/@ozjsey/v-scroll-into-view)
+# v-scroll-into-view
 
-[![npm](https://img.shields.io/npm/v/@ozjsey%2Fv-scroll-into-view)](https://www.npmjs.com/package/@ozjsey/v-scroll-into-view)
+[![npm](https://img.shields.io/npm/v/v-scroll-into-view)](https://www.npmjs.com/package/v-scroll-into-view)
 
 ## Reactive scroll-into-view for Vue 3 — with custom containers and sticky-header offsets
 
@@ -27,7 +27,7 @@ A Vue 3 directive that calls `Element.scrollIntoView()` when a boolean condition
 ## Install
 
 ```bash
-npm install @ozjsey/v-scroll-into-view
+npm install v-scroll-into-view
 ```
 
 Vue 3 is a peer dependency — it won't be bundled.
@@ -38,7 +38,7 @@ Vue 3 is a peer dependency — it won't be bundled.
 
 ```ts
 import { createApp } from "vue";
-import { ScrollIntoViewPlugin } from "@ozjsey/v-scroll-into-view";
+import { ScrollIntoViewPlugin } from "v-scroll-into-view";
 import App from "./App.vue";
 
 createApp(App).use(ScrollIntoViewPlugin).mount("#app");
@@ -50,7 +50,7 @@ This registers the directive globally as `v-scroll-into-view`. Mirrors the patte
 
 ```vue
 <script setup lang="ts">
-import { vScrollIntoView } from "@ozjsey/v-scroll-into-view";
+import { vScrollIntoView } from "v-scroll-into-view";
 </script>
 ```
 
@@ -59,7 +59,7 @@ Vue auto-registers the variable as `v-scroll-into-view` because the name starts 
 **Direct registration with a custom name:**
 
 ```ts
-import { vScrollIntoView, DIRECTIVE_NAME } from "@ozjsey/v-scroll-into-view";
+import { vScrollIntoView, DIRECTIVE_NAME } from "v-scroll-into-view";
 app.directive(DIRECTIVE_NAME, vScrollIntoView); // "scroll-into-view"
 ```
 
@@ -94,7 +94,7 @@ Equivalent to `v-scroll-into-view="true"` — scrolls the element into view as s
 ```vue
 <script setup lang="ts">
 import { ref } from "vue";
-import { vScrollIntoView } from "@ozjsey/v-scroll-into-view";
+import { vScrollIntoView } from "v-scroll-into-view";
 
 // Enough rows to overflow the box — five 40px rows in a 200px box do not
 // scroll, and a directive with nowhere to go looks exactly like a broken one.
@@ -128,7 +128,7 @@ Only the element whose condition transitions to `true` will scroll — the rest 
 ```vue
 <script setup lang="ts">
 import { ref } from "vue";
-import { vScrollIntoView } from "@ozjsey/v-scroll-into-view";
+import { vScrollIntoView } from "v-scroll-into-view";
 
 const activeId = ref<string | null>(null);
 const sections = [
@@ -176,7 +176,7 @@ By default, native `scrollIntoView` scrolls the *nearest scrollable ancestor* �
 ```vue
 <script setup lang="ts">
 import { ref } from "vue";
-import { vScrollIntoView } from "@ozjsey/v-scroll-into-view";
+import { vScrollIntoView } from "v-scroll-into-view";
 
 const messages = ref([/* ... */]);
 const activeId = ref<string | null>(null);
@@ -329,7 +329,7 @@ Use this when the element to scroll is held outside the template (e.g. a program
 ```vue
 <script setup lang="ts">
 import { useTemplateRef } from "vue";
-import { useScrollIntoView } from "@ozjsey/v-scroll-into-view";
+import { useScrollIntoView } from "v-scroll-into-view";
 
 const sectionRef = useTemplateRef<HTMLElement>("section");
 const scroller = useScrollIntoView({
@@ -406,8 +406,8 @@ When a plain boolean is passed (`v-scroll-into-view="true"`), it is equivalent t
 ## TypeScript
 
 ```ts
-import { vScrollIntoView } from "@ozjsey/v-scroll-into-view";
-import type { VScrollIntoViewOptions } from "@ozjsey/v-scroll-into-view";
+import { vScrollIntoView } from "v-scroll-into-view";
+import type { VScrollIntoViewOptions } from "v-scroll-into-view";
 
 const opts: VScrollIntoViewOptions = {
   condition: true,
