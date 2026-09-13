@@ -4,7 +4,7 @@
 
 Try the live examples in the [npm portfolio playground](https://github.com/ozJSey/npm-portfolio-playground).
 
-[![npm](https://img.shields.io/npm/v/v-scroll-into-view)](https://www.npmjs.com/package/v-scroll-into-view)
+[![npm](https://img.shields.io/npm/v/@ozjsey/v-scroll-into-view)](https://www.npmjs.com/package/@ozjsey/v-scroll-into-view)
 
 ## Reactive scroll-into-view for Vue 3 — with custom containers and sticky-header offsets
 
