@@ -1,0 +1,133 @@
+/**
+ * Composable form — imperative scroll without binding to a template. Shares
+ * `execute-scroll.ts` with the directive; only the rAF bookkeeping differs
+ * (a local variable here vs the per-element WeakMap there).
+ */
+import { getCurrentScope, onScopeDispose, ref, type Ref } from 'vue'
+import { executeScroll } from './execute-scroll'
+import { resolveBinding } from './resolve'
+import type { ScrollIntoViewState, VScrollIntoViewOptions } from './types'
+
+export interface UseScrollIntoViewParams {
+  /**
+   * Element to scroll. Accepts either a static `HTMLElement` (e.g. from
+   * `useTemplateRef()`'s `.value`), `null`, or a getter `() => HTMLElement | null`
+   * (resolved every `scroll()` call so reactive ref unwrapping works).
+   */
+  target: HTMLElement | (() => HTMLElement | null) | null
+  /** Initial options. Updated reactively via {@link UseScrollIntoViewReturn.update}. */
+  options?: VScrollIntoViewOptions
+}
+
+export interface UseScrollIntoViewReturn {
+  /**
+   * Current scroll state — `'pending'` between the `scroll()` call and the
+   * next animation frame; `'idle'` otherwise.
+   */
+  state: Ref<ScrollIntoViewState>
+  /** Imperatively trigger a scroll using the current options. */
+  scroll: () => void
+  /** Cancel any pending rAF; safe to call when nothing is queued. */
+  cancel: () => void
+  /** Merge new options. Affects the next `scroll()` call. */
+  update: (next: VScrollIntoViewOptions) => void
+}
+
+/**
+ * Composable form of the directive — imperative scroll without binding to a
+ * template. Useful for:
+ *   - Programmatic scroll on user action (button click, route change)
+ *   - Components that don't render the scrolled element themselves
+ *   - SSR-safe code paths where the target may be `null` server-side
+ *
+ * @example
+ * ```ts
+ * const sectionRef = useTemplateRef<HTMLElement>('section')
+ * const scroller = useScrollIntoView({
+ *   target: () => sectionRef.value,
+ *   options: { behavior: 'smooth', block: 'start', offset: { top: 64 } },
+ * })
+ * function jumpToSection() {
+ *   scroller.scroll()
+ * }
+ * ```
+ *
+ * SSR-safe: when `document` is undefined or `target` resolves to `null`,
+ * `scroll()` is a no-op and `state` stays at `'idle'`.
+ */
+export function useScrollIntoView(params: UseScrollIntoViewParams): UseScrollIntoViewReturn {
+  const state = ref<ScrollIntoViewState>('idle')
+  let lastOpts: VScrollIntoViewOptions = { ...(params.options ?? {}) }
+  // Track the in-flight rAF id so cancel(), repeated scroll() calls, and
+  // effectScope dispose can all coalesce by reusing/canceling it.
+  let pendingRaf: number | undefined
+
+  function resolveTargetEl(): HTMLElement | null {
+    if (!params.target) return null
+    if (typeof params.target === 'function') {
+      try {
+        return params.target() ?? null
+      } catch {
+        return null
+      }
+    }
+    return params.target
+  }
+
+  function scroll(): void {
+    if (typeof document === 'undefined') return
+    const el = resolveTargetEl()
+    if (!el) return
+
+    // Coalesce repeated scroll() calls — drop the prior frame so only the
+    // most recent options/target win.
+    if (pendingRaf !== undefined) {
+      cancelAnimationFrame(pendingRaf)
+      pendingRaf = undefined
+    }
+
+    state.value = 'pending'
+
+    const opts = resolveBinding({ condition: true, ...lastOpts })
+    pendingRaf = requestAnimationFrame(() => {
+      pendingRaf = undefined
+      state.value = 'idle'
+      // Shared executor — single source of truth for the directive AND the
+      // composable. Eliminates the prior `nearest + offset + container` drift
+      // where the composable's scrollFor() call omitted offsetStart.
+      executeScroll(el, opts)
+    })
+  }
+
+  function cancel(): void {
+    if (pendingRaf !== undefined) {
+      cancelAnimationFrame(pendingRaf)
+      pendingRaf = undefined
+    }
+    state.value = 'idle'
+  }
+
+  function update(next: VScrollIntoViewOptions): void {
+    // MERGE rather than replace so partial updates preserve prior keys
+    // (e.g. `update({ behavior: 'instant' })` keeps an earlier `container`).
+    lastOpts = { ...lastOpts, ...next }
+  }
+
+  // Only register cleanup when called inside an active effect scope. Avoids
+  // Vue's "no active effect scope" warning when the composable is invoked
+  // outside setup() (unit tests, imperative code). `getCurrentScope()` is
+  // available in Vue 3.0+; the `failSilently` second arg was only added in
+  // 3.5, so guarding manually keeps the library quiet across the supported
+  // peer-dependency range.
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      if (pendingRaf !== undefined) {
+        cancelAnimationFrame(pendingRaf)
+        pendingRaf = undefined
+      }
+      state.value = 'idle'
+    })
+  }
+
+  return { state, scroll, cancel, update }
+}
