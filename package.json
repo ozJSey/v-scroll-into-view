@@ -1,5 +1,5 @@
 {
-  "name": "v-scroll-into-view",
+  "name": "@ozjsey/v-scroll-into-view",
   "version": "1.2.0",
   "description": "Vue 3 directive for reactive scroll-into-view with edge detection, custom scroll container, and sticky-header offset — ideal for chat panes, modal lists, v-for active item, anchor navigation",
   "author": "Ozgur Seyidoglu",
