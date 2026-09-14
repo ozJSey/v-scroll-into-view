@@ -16,8 +16,8 @@ trust this over native `scrollIntoView`: it sweeps the `container` path against 
 alignment, and which side the target is approached from — and prints one number. Its horizontal
 counterpart is [**the direction sweep**](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/direction), which
 runs the same comparison across every combination of the pane's `direction`, the target's
-`direction` and the four `inline` alignments — the axis 1.3.0 got wrong and 1.3.1 fixes. Source:
-[npm-portfolio-playground](https://github.com/ozJSey/npm-portfolio-playground).
+`direction` and the four `inline` alignments — the axis 1.3.0 got wrong and 1.3.1 fixes. Both run
+in the [`v-scroll-into-view` tab](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view).
 
 [![npm](https://img.shields.io/npm/v/@ozjsey/v-scroll-into-view)](https://www.npmjs.com/package/@ozjsey/v-scroll-into-view)
 
