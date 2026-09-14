@@ -8,6 +8,20 @@ import { executeScroll } from './execute-scroll'
 import { resolveBinding } from './resolve'
 import type { ScrollIntoViewState, VScrollIntoViewOptions } from './types'
 
+/**
+ * What a composable call can act on: the directive's options minus the two that
+ * only mean something to a directive.
+ *
+ * `condition` is edge-detected against the previous render and `always` decides
+ * whether a repeated truthy render re-scrolls — both are answers to "did
+ * something change?", and an imperative `scroll()` has already answered it. The
+ * composable used to ACCEPT them and ignore them:
+ * `useScrollIntoView({ options: { condition: false } }).scroll()` scrolled, with
+ * full TypeScript approval. Naming the narrower type is the whole fix — a
+ * consumer who gates on `condition` now finds out at compile time.
+ */
+export type UseScrollIntoViewOptions = Omit<VScrollIntoViewOptions, 'condition' | 'always'>
+
 export interface UseScrollIntoViewParams {
   /**
    * Element to scroll. Accepts either a static `HTMLElement` (e.g. from
@@ -16,7 +30,7 @@ export interface UseScrollIntoViewParams {
    */
   target: HTMLElement | (() => HTMLElement | null) | null
   /** Initial options. Updated reactively via {@link UseScrollIntoViewReturn.update}. */
-  options?: VScrollIntoViewOptions
+  options?: UseScrollIntoViewOptions
 }
 
 export interface UseScrollIntoViewReturn {
@@ -30,7 +44,7 @@ export interface UseScrollIntoViewReturn {
   /** Cancel any pending rAF; safe to call when nothing is queued. */
   cancel: () => void
   /** Merge new options. Affects the next `scroll()` call. */
-  update: (next: VScrollIntoViewOptions) => void
+  update: (next: UseScrollIntoViewOptions) => void
 }
 
 /**
@@ -57,7 +71,7 @@ export interface UseScrollIntoViewReturn {
  */
 export function useScrollIntoView(params: UseScrollIntoViewParams): UseScrollIntoViewReturn {
   const state = ref<ScrollIntoViewState>('idle')
-  let lastOpts: VScrollIntoViewOptions = { ...(params.options ?? {}) }
+  let lastOpts: UseScrollIntoViewOptions = { ...(params.options ?? {}) }
   // Track the in-flight rAF id so cancel(), repeated scroll() calls, and
   // effectScope dispose can all coalesce by reusing/canceling it.
   let pendingRaf: number | undefined
@@ -88,7 +102,9 @@ export function useScrollIntoView(params: UseScrollIntoViewParams): UseScrollInt
 
     state.value = 'pending'
 
-    const opts = resolveBinding({ condition: true, ...lastOpts })
+    // `condition` last, not first: an imperative call IS the condition, and a
+    // stray one spread in from a JS caller must not be able to turn it off.
+    const opts = resolveBinding({ ...lastOpts, condition: true })
     pendingRaf = requestAnimationFrame(() => {
       pendingRaf = undefined
       state.value = 'idle'
@@ -107,7 +123,7 @@ export function useScrollIntoView(params: UseScrollIntoViewParams): UseScrollInt
     state.value = 'idle'
   }
 
-  function update(next: VScrollIntoViewOptions): void {
+  function update(next: UseScrollIntoViewOptions): void {
     // MERGE rather than replace so partial updates preserve prior keys
     // (e.g. `update({ behavior: 'instant' })` keeps an earlier `container`).
     lastOpts = { ...lastOpts, ...next }

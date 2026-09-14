@@ -7,12 +7,23 @@ import type { Directive, DirectiveBinding } from 'vue'
 import { executeScroll } from './execute-scroll'
 import { resolveBinding } from './resolve'
 import { STATE_ATTR, setState, stateMap } from './state'
+import type { ElementState } from './state'
 import type { ResolvedOptions, VScrollIntoViewOptions } from './types'
 
-function doScroll(el: HTMLElement, opts: ResolvedOptions): void {
-  const state = stateMap.get(el)
-  if (!state) return
-
+/**
+ * Queue the scroll for the next frame, so a condition that flips during a
+ * render batch scrolls once, against the layout the browser is about to paint.
+ *
+ * The frame is where the edge is really spent. `updated()` marks the condition
+ * consumed the moment it sees it, which is the only order that lets a falling
+ * edge be recorded — but a scroll can still decline to happen (a target with no
+ * box, a `container` that has not rendered yet), and an edge spent on a no-op
+ * is an edge that never comes back: while the condition stays true, no further
+ * update is a false→true transition. So a refusal RE-ARMS the edge, and the
+ * next update gets another attempt. Deciding a `nearest` target is already in
+ * view is not a refusal — that is the correct answer, and it is final.
+ */
+function doScroll(el: HTMLElement, state: ElementState, opts: ResolvedOptions): void {
   if (state.pendingRaf !== undefined) {
     cancelAnimationFrame(state.pendingRaf)
   }
@@ -20,13 +31,9 @@ function doScroll(el: HTMLElement, opts: ResolvedOptions): void {
   setState(el, 'pending')
 
   state.pendingRaf = requestAnimationFrame(() => {
-    // Defensive: if `unmounted()` raced ahead of cancelAnimationFrame (browser
-    // queued the cb before seeing the cancel), the WeakMap entry will be gone.
-    // Skip the work — `el` is detached and the host CSS hook is already cleared.
-    if (!stateMap.has(el)) return
     state.pendingRaf = undefined
     setState(el, 'idle')
-    executeScroll(el, opts)
+    if (!executeScroll(el, opts)) state.previousCondition = false
   })
 }
 
@@ -55,17 +62,18 @@ export const vScrollIntoView: Directive<
   mounted(el: HTMLElement, binding: DirectiveBinding<boolean | VScrollIntoViewOptions | undefined>) {
     const opts = resolveBinding(binding.value)
 
-    stateMap.set(el, {
+    const state: ElementState = {
       previousCondition: opts.condition,
       pendingRaf: undefined,
-    })
+    }
+    stateMap.set(el, state)
 
     // Always set a deterministic starting attribute so consumer CSS sees
     // the hook from the very first frame.
     setState(el, 'idle')
 
     if (opts.condition) {
-      doScroll(el, opts)
+      doScroll(el, state, opts)
     }
   },
 
@@ -80,7 +88,7 @@ export const vScrollIntoView: Directive<
     if (!opts.condition) return
 
     if (opts.always || !prev) {
-      doScroll(el, opts)
+      doScroll(el, state, opts)
     }
   },
 

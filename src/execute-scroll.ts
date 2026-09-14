@@ -2,9 +2,22 @@
  * The scroll executor — shared by the directive's rAF callback and the
  * composable's `scroll()` so the two paths cannot drift (the historical
  * `nearest + offset + container` bug existed because they were duplicated).
+ *
+ * It composes, and owns no arithmetic of its own:
+ *   `geometry.ts`  element rects → numbers in the container's scroll space
+ *   `scroll-box.ts`  those numbers + `offset` → a box and a viewing region
+ *   `align.ts`     box + region → where the scroll offset goes
+ *   `scrollers.ts` the scrollers between the target and the pinned container
+ *   `pending-scroll.ts`  where an in-flight smooth scroll is heading
  */
-import { resolveContainer } from './resolve'
+import { alignAxis } from './align'
+import { measureContainer, physicalInline } from './geometry'
+import { assumedPosition, rememberDestination, type ScrollPosition } from './pending-scroll'
+import { behaviorFor, resolveContainer } from './resolve'
+import { scrollBoxFor } from './scroll-box'
+import { isScrollable, scrollersBetween } from './scrollers'
 import type { ResolvedOptions } from './types'
+import { warnOnce } from './warn'
 
 /**
  * True when the element has no associated layout box — `display: none`,
@@ -13,8 +26,8 @@ import type { ResolvedOptions } from './types'
  * Native `scrollIntoView` returns early in exactly this case ("if the element
  * does not have any associated box, return"), and the `container` path has to
  * make the same call for itself: a boxless element reports a 0×0 rect at
- * (0, 0), which turns `relTop` into a large negative and scrolls the pane to
- * the very top. Measured in Chrome: `scrollTop` 300 → 0 on a `v-show="false"`
+ * (0, 0), which turns `rel` into a large negative and scrolls the pane to the
+ * very top. Measured in Chrome: `scrollTop` 300 → 0 on a `v-show="false"`
  * target, while the container-less path correctly stayed put.
  *
  * `getClientRects()` IS the spec's "has an associated box" test — it is empty
@@ -30,113 +43,136 @@ function hasNoBox(el: HTMLElement): boolean {
   return el.ownerDocument.documentElement.getClientRects().length > 0
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
+}
+
 /**
- * Where to scroll one axis of the container so `[rel, rel + size]` lands in
- * `[scroll, scroll + client]`, or `null` when this axis needs no scroll.
- *
- * `offsetStart` is the library's `offset` for the axis: the leading
- * `offsetStart` pixels of the scrolling box are treated as obscured by a
- * sticky header or fixed toolbar.
+ * Scroll one container so the target lands where `block` / `inline` ask, and
+ * report how far it moved from where it is RIGHT NOW — which is what the next
+ * scroller out has to subtract, because the target's rect was measured before
+ * any of this happened.
  */
-function scrollFor(
-  align: ScrollLogicalPosition,
-  rel: number,
-  size: number,
-  scroll: number,
-  client: number,
-  offsetStart: number = 0,
-): number | null {
-  const far = rel + size
-  if (align === 'start') return rel - offsetStart
-  if (align === 'end') return far - client - offsetStart
-  if (align === 'center') return rel + size / 2 - client / 2 - offsetStart
+function scrollOne(
+  el: HTMLElement,
+  container: HTMLElement,
+  opts: ResolvedOptions,
+  behavior: ScrollBehavior,
+  shift: ScrollPosition,
+): ScrollPosition {
+  const assumed = assumedPosition(container)
+  const geo = measureContainer(el, container, assumed, shift)
 
-  // `nearest`. The gap is a nicety; the target being visible at all is not.
-  // Honour the offset only while the target still fits in what it leaves
-  // behind, otherwise the gap pushes the target's own far edge back out of
-  // view — measured as 40px of a 200px target clipped inside a 200px pane.
-  const lead = size <= client - offsetStart ? offsetStart : 0
-  const visibleStart = scroll + lead
-  const visibleEnd = scroll + client
-  const startOutside = rel < visibleStart
-  const endOutside = far > visibleEnd
+  if (geo.verticalWritingMode) {
+    warnOnce(
+      'a `container` in a vertical writing mode is not supported — `block` and `inline` swap axes ' +
+        'there, and the container path scrolls the horizontal one. Drop `container` on this element ' +
+        'so the browser resolves the axes itself.',
+    )
+  }
 
-  if (!startOutside && !endOutside) return null // already in view
-  if (startOutside && endOutside) return null // already covers the whole box
-  // Native `nearest` aligns the far edge only when the target is small enough
-  // for that to reveal its near edge too. Anything taller than the box gets
-  // its NEAR edge aligned — a 400px target in a 200px pane shows its top, not
-  // its bottom.
-  if (endOutside && size < client - lead) return far - client
-  return rel - lead
+  const top = alignAxis(opts.block, scrollBoxFor(opts.block, geo.vertical, opts.offset?.top))
+  const inlineAlign = physicalInline(opts.inline, geo.rtl)
+  const left = alignAxis(inlineAlign, scrollBoxFor(inlineAlign, geo.horizontal, opts.offset?.left))
+
+  if (top === null && left === null) return { top: 0, left: 0 }
+
+  // `scrollTo` clamps to the scrollable range; clamping here too keeps the
+  // remembered destination reachable and the reported delta honest.
+  const maxTop = Math.max(0, container.scrollHeight - container.clientHeight)
+  const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth)
+  const target: ScrollPosition = {
+    top: clamp(top ?? container.scrollTop, 0, maxTop),
+    left: geo.rtl
+      ? clamp(left ?? container.scrollLeft, -maxLeft, 0)
+      : clamp(left ?? container.scrollLeft, 0, maxLeft),
+  }
+
+  rememberDestination(container, target)
+  container.scrollTo({ top: target.top, left: target.left, behavior })
+  return { top: target.top - container.scrollTop, left: target.left - container.scrollLeft }
+}
+
+/**
+ * The pinned container and every scroller between it and the target,
+ * innermost first.
+ *
+ * `container` means "this is the outermost thing I want moved". It never meant
+ * "ignore the panes inside it" — an inner scroller left where it was can keep
+ * the target invisible while the outer pane reports success. Native
+ * `scrollIntoView` walks the whole chain with the same alignment on each step,
+ * and that is what is reproduced here.
+ */
+function scrollChain(el: HTMLElement, container: HTMLElement, opts: ResolvedOptions): void {
+  const behavior = behaviorFor(opts.behavior)
+  const shift: ScrollPosition = { top: 0, left: 0 }
+  for (const scroller of [...scrollersBetween(el, container), container]) {
+    const moved = scrollOne(el, scroller, opts, behavior, shift)
+    shift.top += moved.top
+    shift.left += moved.left
+  }
 }
 
 /**
  * Execute one scroll synchronously against the host element.
  *
- * Container path: math against the chosen ancestor, then `container.scrollTo`.
- * Native path: ephemeral `scrollMargin{Top,Left}` write-then-restore wrapped
- * around `el.scrollIntoView`.
+ * Returns whether the request was SERVICED. Deciding that a `nearest` target is
+ * already in view counts — that is the correct answer, and the edge that
+ * triggered it is genuinely spent. Bailing out because the target has no box or
+ * the container did not resolve does not: the scheduler that owns the edge has
+ * to know it may still have work to do, or a panel mounted behind a `v-if`
+ * never scrolls for the whole life of the component.
  */
-export function executeScroll(el: HTMLElement, opts: ResolvedOptions): void {
+export function executeScroll(el: HTMLElement, opts: ResolvedOptions): boolean {
   // No box means no position to scroll to. Both paths agree on this, so a
   // hidden target is a no-op whether or not a `container` is set.
-  if (hasNoBox(el)) return
+  if (hasNoBox(el)) return false
 
   if (opts.container !== undefined) {
     const container = resolveContainer(el, opts.container)
-    if (!container || !container.isConnected) return
-
-    const targetRect = el.getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
-
-    const relTop = targetRect.top - containerRect.top + container.scrollTop
-    const relLeft = targetRect.left - containerRect.left + container.scrollLeft
-
-    // The offset is folded into `scrollFor` rather than subtracted afterwards.
-    // The post-hoc version had to GUESS which branch `nearest` had taken by
-    // comparing the result back against `rel`, and `far - client` equals `rel`
-    // exactly when the target is the size of the pane — so the guess was wrong
-    // on that one input, and the offset was applied to a far-edge alignment.
-    const newTop = scrollFor(
-      opts.block,
-      relTop,
-      targetRect.height,
-      container.scrollTop,
-      container.clientHeight,
-      opts.offset?.top ?? 0,
-    )
-    const newLeft = scrollFor(
-      opts.inline,
-      relLeft,
-      targetRect.width,
-      container.scrollLeft,
-      container.clientWidth,
-      opts.offset?.left ?? 0,
-    )
-
-    if (newTop === null && newLeft === null) return
-
-    container.scrollTo({
-      top: newTop ?? container.scrollTop,
-      left: newLeft ?? container.scrollLeft,
-      behavior: opts.behavior,
-    })
-    return
+    if (!container || !container.isConnected) {
+      warnOnce(
+        '`container` resolved to null or to a detached element, so nothing scrolled. Setting ' +
+          '`container` opts out of native `scrollIntoView` entirely — there is no fallback.',
+      )
+      return false
+    }
+    if (container === el || !container.contains(el)) {
+      warnOnce(
+        '`container` is not an ancestor of the element it was given to, so scrolling it cannot ' +
+          'bring that element into view. A plain CSS selector matches the FIRST match in the whole ' +
+          "document — inside a `v-for` of panes use `:scope <selector>`, which walks up from the " +
+          'element instead.',
+      )
+      return false
+    }
+    if (!isScrollable(container)) {
+      warnOnce(
+        '`container` has no scrollable overflow, so `scrollTo` has nowhere to go. Check that the ' +
+          'element carrying `overflow: auto` is the one the selector matches — it is often an ' +
+          'inner wrapper.',
+      )
+    }
+    scrollChain(el, container, opts)
+    return true
   }
 
-  const off = opts.offset
-  const st = off?.top !== undefined
-  const sl = off?.left !== undefined
-  const s = el.style
-  const pt = st ? s.scrollMarginTop : ''
-  const pl = sl ? s.scrollMarginLeft : ''
-  if (st) s.scrollMarginTop = `${off!.top}px`
-  if (sl) s.scrollMarginLeft = `${off!.left}px`
+  // Native path. `offset` is handed to the browser in the vocabulary it already
+  // has for a gap — an inline `scroll-margin`, written across the call and put
+  // back after, on the axes the consumer named and no others. That is also why
+  // `{ top: 0 }` removes a stylesheet's `scroll-margin-top`: `offset` overrides
+  // the CSS per side, and the container path does the same thing.
+  const offset = opts.offset
+  const style = el.style
+  const previousTop = offset?.top !== undefined ? style.scrollMarginTop : undefined
+  const previousLeft = offset?.left !== undefined ? style.scrollMarginLeft : undefined
+  if (offset?.top !== undefined) style.scrollMarginTop = `${offset.top}px`
+  if (offset?.left !== undefined) style.scrollMarginLeft = `${offset.left}px`
   try {
-    el.scrollIntoView({ behavior: opts.behavior, block: opts.block, inline: opts.inline })
+    el.scrollIntoView({ behavior: behaviorFor(opts.behavior), block: opts.block, inline: opts.inline })
   } finally {
-    if (st) s.scrollMarginTop = pt
-    if (sl) s.scrollMarginLeft = pl
+    if (previousTop !== undefined) style.scrollMarginTop = previousTop
+    if (previousLeft !== undefined) style.scrollMarginLeft = previousLeft
   }
+  return true
 }

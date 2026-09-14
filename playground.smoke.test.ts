@@ -1,16 +1,21 @@
 /**
- * Playground responsive smoke test.
+ * Plugin-install smoke test, at three viewport sizes.
  *
- * The `playground.html` demo is the canonical "does the library work in a
- * real Vue app" exhibit. This suite mounts a Vue app via
- * `createApp(...).use(ScrollIntoViewPlugin).mount()` and exercises the
- * directive's public surface at three responsive breakpoints:
+ * WHAT THIS IS NOT. It used to open by calling `playground.html` "the canonical
+ * 'does the library work in a real Vue app' exhibit". That file was a
+ * hand-written miniature of the directive — no `container`, no `offset`,
+ * pre-1.2.0 `nearest` — living in the same folder as the real thing and
+ * violating ARCHITECTURE.md's one invariant, and this suite never loaded it.
+ * It was deleted in 1.3.0 (SIV-3). The exhibit is `../playground`, which
+ * compiles this package's actual source and is driven in a real browser by
+ * `playground/scripts/interactions/v-scroll-into-view.mjs`.
  *
- *   - mobile  (~375 × 720)
- *   - tablet  (~768 × 900)
- *   - desktop (~1280 × 900)
+ * The three viewports are also honest about themselves now: nothing in this
+ * package reads `innerWidth` or `innerHeight`, so the three describes run the
+ * same assertions and cannot diverge. They are kept as a cheap tripwire for a
+ * future viewport-dependent code path, not as three tests.
  *
- * For each breakpoint the test asserts:
+ * What it does prove, per viewport:
  *   1. `ScrollIntoViewPlugin` registered the directive under
  *      `v-scroll-into-view`.
  *   2. Bare directive on mount sets `data-scroll-into-view-state="pending"`
@@ -22,8 +27,12 @@
  *      across the native call and restores it after.
  *   7. Plugin install path matches `app.directive('scroll-into-view')`
  *      lookup.
+ *
+ * The hooks below are invoked by hand rather than by Vue's update cycle. That
+ * is a real gap and it is covered elsewhere: the playground's interaction
+ * driver asserts, before any check runs, that a directive inside a `v-for`
+ * receives `updated` from Vue itself (the PG-14 guard).
  */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref, useTemplateRef } from 'vue'
 import {
@@ -71,9 +80,11 @@ afterEach(() => {
 })
 
 /**
- * Mount a Vue app that mirrors `playground.html`'s "active item in list" demo.
- * Uses `ScrollIntoViewPlugin` (NOT `app.directive(...)` directly) — proves
- * the plugin install path against a real `createApp`.
+ * Mount a Vue app shaped like an "active item in list" demo, through
+ * `ScrollIntoViewPlugin` (NOT `app.directive(...)` directly) — which is what
+ * proves the plugin install path against a real `createApp`. The rendered items
+ * carry no directive; each test attaches the hooks it needs to the element it
+ * cares about.
  */
 function mountPlayground() {
   const host = document.createElement('div')
@@ -156,7 +167,7 @@ function unmountDirective(el: HTMLElement) {
   )
 }
 
-describe('playground.html — responsive smoke', () => {
+describe('plugin install — responsive smoke', () => {
   for (const [name, vp] of Object.entries(VIEWPORTS)) {
     describe(`@ ${name} (${vp.width}×${vp.height})`, () => {
       it('ScrollIntoViewPlugin registers the directive on app.use()', () => {

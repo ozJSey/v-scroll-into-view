@@ -29,9 +29,11 @@ export type VScrollIntoViewOptions = {
   behavior?: ScrollBehavior
   /**
    * Vertical alignment. Default `'nearest'`, which follows the native rules:
-   * already in view is a no-op, an out-of-view near edge is aligned by that
-   * edge, and a target BIGGER than the scrolling box is aligned by its near
-   * edge too — you get its top, not its bottom.
+   * already in view is a no-op, a target that covers the whole scrollport is a
+   * no-op too, and anything else moves the SHORTEST distance that brings an
+   * edge in. For a target bigger than the scrollport that means the edge you
+   * are travelling towards — scrolling down to reach it aligns its top,
+   * scrolling up to reach it aligns its bottom.
    */
   block?: ScrollLogicalPosition
   /** Horizontal alignment. Default `'nearest'`. */
@@ -46,29 +48,43 @@ export type VScrollIntoViewOptions = {
    *   - `:scope <sel>` to resolve via `el.closest(<sel>)`,
    *   - or a `() => HTMLElement | null` getter (called every scroll).
    *
-   * Resolution to `null` or to a detached element is a silent no-op — the
-   * directive does NOT fall back to native `scrollIntoView`, so `container`
-   * always wins when set.
+   * Must be an ancestor of the element it is given to, and should be the
+   * OUTERMOST scroller you want moved: every scroller between it and the target
+   * is scrolled too, as native `scrollIntoView` does, because an inner pane
+   * left where it was can keep the target invisible.
+   *
+   * Resolution to `null`, to a detached element, or to something that is not an
+   * ancestor scrolls nothing and warns once — the directive does NOT fall back
+   * to native `scrollIntoView`, so `container` always wins when set. A plain
+   * CSS selector matches the first element in the whole document; inside a
+   * `v-for` of panes use the `:scope <sel>` form.
    */
   container?: ContainerRef
   /**
    * Gap to leave between target and scroll edge — for sticky headers,
    * fixed toolbars, etc.
    *
-   * With `container`: subtracted from the computed `scrollTop` / `scrollLeft`.
-   * Without `container`: written as ephemeral inline `scrollMarginTop` /
-   * `scrollMarginLeft` on the host across the native call, then restored.
+   * It is a per-side OVERRIDE of the target's CSS `scroll-margin` on that side,
+   * on both paths: without `container` it is written as an ephemeral inline
+   * `scroll-margin-top` / `-left` across the native call and restored after;
+   * with `container` the same number is substituted for the computed
+   * `scroll-margin` the container path now reads. So `{ top: 0 }` means "no gap
+   * on this side" and removes a stylesheet's `scroll-margin-top` — the same
+   * answer either way.
    *
    * Only the axes you explicitly provide are touched — `{ top: 64 }` leaves
-   * `scrollMarginLeft` (inline or cascaded) untouched.
+   * `scroll-margin-left` (inline or cascaded) alone, and neither side of it
+   * touches `scroll-margin-bottom` / `-right`, which are read from CSS.
+   *
+   * Being a leading-edge gap, it lands where CSS puts a `scroll-margin-top`:
+   * fully on `'start'`, half on `'center'` (both edges of the box move the
+   * centre), and not at all on `'end'`, whose alignment is made from the
+   * trailing edge.
    *
    * On `block`/`inline` `'nearest'` the gap is honoured only while the target
    * still fits in what it leaves behind; a target too big for that is aligned
-   * without the gap rather than clipped by it.
-   *
-   * NOTE: with `container`, CSS `scroll-margin-*` is NOT read — the math runs
-   * on `getBoundingClientRect()`, which does not include scroll margins. Mirror
-   * the CSS value here when you pin a container.
+   * without the gap rather than clipped by it. This is the one place the two
+   * paths deliberately differ: the browser clips instead.
    */
   offset?: { top?: number; left?: number }
 }
@@ -87,7 +103,12 @@ export type ScrollIntoViewState = 'idle' | 'pending'
 /** What a binding value normalizes to before any scrolling happens. */
 export interface ResolvedOptions {
   condition: boolean
-  behavior: ScrollBehavior
+  /**
+   * `undefined` means "the consumer did not name one" — the reduced-motion
+   * default is resolved by `behaviorFor` in the frame the scroll happens, so it
+   * is not read once per bound element per re-render.
+   */
+  behavior: ScrollBehavior | undefined
   block: ScrollLogicalPosition
   inline: ScrollLogicalPosition
   always: boolean

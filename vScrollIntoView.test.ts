@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createApp, ref, nextTick, effectScope, type Directive, type App } from 'vue'
 import { vScrollIntoView, useScrollIntoView, type VScrollIntoViewOptions } from './vScrollIntoView'
+// Internal, deliberately not part of the public surface: latch resets, so a
+// check can prove a warning fires rather than prove an earlier test spent it,
+// and prove the in-flight-destination path rather than inherit a leftover.
+import { resetWarnings } from './src/warn'
+import { resetDestinations } from './src/pending-scroll'
 
 // ---------------------------------------------------------------------------
 // RAF helpers — manual flush so we can verify scheduling behavior
@@ -277,26 +282,66 @@ describe('vScrollIntoView', () => {
 // ---------------------------------------------------------------------------
 // Container option — scroll a chosen ancestor instead of the nearest scrollable
 // ---------------------------------------------------------------------------
+/**
+ * A container whose numbers are CONSISTENT with each other, the way a real
+ * element's are.
+ *
+ * The old fixture took `rect`, `clientHeight` and `scrollTop` as three free
+ * numbers, which let it describe geometries no element can have — and made the
+ * border-width defect of SIV-4 S1 undetectable, because the one relationship
+ * that was wrong (`getBoundingClientRect()` reports the BORDER box while
+ * `scrollTop`/`clientHeight` are measured from the PADDING box) was never
+ * expressed. Here the border is the input and everything else is derived:
+ *
+ *   rect.height = clientHeight + 2 × border      (border box wraps the scrollport)
+ *   clientTop   = border                          (the gap between the two origins)
+ *   offsetHeight = rect.height                    (so the scale ratio is 1)
+ *
+ * `scrollHeight` matters too: jsdom reports 0 for it, and the executor clamps
+ * its destination to the scrollable range, so a fixture without one clamps
+ * every scroll to 0.
+ */
 function makeContainer(opts: {
   scrollTop?: number
   scrollLeft?: number
   clientHeight?: number
   clientWidth?: number
-  rect?: { top?: number; left?: number; width?: number; height?: number }
+  /** Border width on every side. `clientTop`/`clientLeft` follow it. */
+  border?: number
+  scrollHeight?: number
+  scrollWidth?: number
+  rect?: { top?: number; left?: number }
 } = {}): HTMLDivElement {
   const c = document.createElement('div')
   document.body.appendChild(c)
+  const border = opts.border ?? 0
+  const clientHeight = opts.clientHeight ?? 200
+  const clientWidth = opts.clientWidth ?? 200
+  const define = (prop: string, value: number) =>
+    Object.defineProperty(c, prop, { value, writable: true, configurable: true })
+
+  // Longhands, not the `overflow` shorthand: jsdom does not expand the
+  // shorthand into computed longhands, and `isScrollable` reads the longhands.
+  c.style.overflowY = 'auto'
+  c.style.overflowX = 'auto'
   c.scrollTo = vi.fn()
-  Object.defineProperty(c, 'scrollTop', { value: opts.scrollTop ?? 0, writable: true, configurable: true })
-  Object.defineProperty(c, 'scrollLeft', { value: opts.scrollLeft ?? 0, writable: true, configurable: true })
-  Object.defineProperty(c, 'clientHeight', { value: opts.clientHeight ?? 200, writable: true, configurable: true })
-  Object.defineProperty(c, 'clientWidth', { value: opts.clientWidth ?? 200, writable: true, configurable: true })
+  define('scrollTop', opts.scrollTop ?? 0)
+  define('scrollLeft', opts.scrollLeft ?? 0)
+  define('clientHeight', clientHeight)
+  define('clientWidth', clientWidth)
+  define('clientTop', border)
+  define('clientLeft', border)
+  define('scrollHeight', opts.scrollHeight ?? Math.max(clientHeight, 10_000))
+  define('scrollWidth', opts.scrollWidth ?? Math.max(clientWidth, 10_000))
+
   const r = {
     top: opts.rect?.top ?? 0,
     left: opts.rect?.left ?? 0,
-    width: opts.rect?.width ?? 200,
-    height: opts.rect?.height ?? 200,
+    width: clientWidth + border * 2,
+    height: clientHeight + border * 2,
   }
+  define('offsetHeight', r.height)
+  define('offsetWidth', r.width)
   c.getBoundingClientRect = vi.fn(() => ({
     top: r.top,
     left: r.left,
@@ -745,7 +790,13 @@ describe('vScrollIntoView — hardening', () => {
     document.body.innerHTML = ''
   })
 
-  it('container + offset with block: end: offset still subtracts from final scrollTop', () => {
+  it('container + offset.top with block: end: the gap is on the LEADING edge, so end is untouched (SIV-4 S3)', () => {
+    // `offset.top` is a leading-edge gap — the same thing the container-less
+    // path writes as an inline `scroll-margin-top`, which CSS applies fully to
+    // `start`, half to `center` and NOT AT ALL to `end`. Until 1.3.0 the
+    // container path subtracted it from every alignment, so a chat pane with a
+    // global `offset: { top: 64 }` pinned with `block: 'end'` rested 64px above
+    // the bottom and the native path did not.
     const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
     const target = document.createElement('div')
     container.appendChild(target)
@@ -754,9 +805,27 @@ describe('vScrollIntoView — hardening', () => {
     mountWithValueAndContainerSetup({ container, block: 'end', offset: { top: 32 } }, target)
     flushRaf()
 
-    // block: end -> 250; subtract offset 32 -> 218
+    // block: end -> 450 - 200 = 250, offset or no offset.
     expect(container.scrollTo).toHaveBeenCalledWith({
-      top: 218,
+      top: 250,
+      left: 0,
+      behavior: 'smooth',
+    })
+  })
+
+  it('container + offset.top with block: center: the gap counts HALF, as scroll-margin does (SIV-4 S3)', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    const target = document.createElement('div')
+    container.appendChild(target)
+    setElementRect(target, { top: 400, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, block: 'center', offset: { top: 60 } }, target)
+    flushRaf()
+
+    // The scroll box is [400 - 60, 450]; its centre is 395, the scrollport's is
+    // 100, so scrollTop 295 — 30 above the un-offset 325, i.e. half the gap.
+    expect(container.scrollTo).toHaveBeenCalledWith({
+      top: 295,
       left: 0,
       behavior: 'smooth',
     })
@@ -1558,22 +1627,29 @@ describe('vScrollIntoView — teardown races + plugin idempotence', () => {
     document.body.innerHTML = ''
   })
 
-  it('rAF callback resilient to mid-flight unmount: no throw when cb runs after unmounted clears state', () => {
-    // Simulate: rAF queued, then unmount() runs cancelAnimationFrame & deletes
-    // state, but the rAF cb still gets invoked manually (paranoia: browsers may
-    // race the cancel under heavy load). State entry is gone — the cb should
-    // bail safely rather than crash on undefined access.
+  it('unmount cancels the queued frame, so the scroll never runs', () => {
+    // This test used to claim more than it did. Its comment said "the rAF cb
+    // still gets invoked manually (paranoia: browsers may race the cancel)" —
+    // nothing invoked it: `triggerUnmount` calls the mocked
+    // `cancelAnimationFrame`, which removes the callback from the queue, so the
+    // `flushRaf()` below iterates nothing and both assertions passed vacuously.
+    // It was cited as coverage for a `!stateMap.has(el)` guard in `directive.ts`
+    // that it never reached, and that guard is now gone: `cancelAnimationFrame`
+    // is specified to remove the callback (the HTML spec sets a cancelled flag
+    // that the frame-callback loop checks), so the state it defended against is
+    // not reachable, and defending against unreachable states is what
+    // CONVENTIONS bans. What is left is the claim the test can actually make.
     const target = document.createElement('div')
     document.body.appendChild(target)
     target.scrollIntoView = vi.fn()
 
     mountWithValueAndContainerSetup({ condition: true }, target)
-    // Capture the rAF cb that doScroll queued; clear the WeakMap entry to simulate
-    // unmount having raced ahead.
+    expect(rafCallbacks).toHaveLength(1)
+
     triggerUnmount(target)
+    expect(rafCallbacks).toHaveLength(0)
+
     expect(() => flushRaf()).not.toThrow()
-    // After unmount + flush, no scrollIntoView call (target may still have it but
-    // the directive's logic was torn down).
     expect(target.scrollIntoView).not.toHaveBeenCalled()
   })
 
@@ -1831,7 +1907,13 @@ describe('vScrollIntoView — block: nearest, target taller than the container (
     expect(container.scrollTo).toHaveBeenCalledWith({ top: 300, left: 0, behavior: 'smooth' })
   })
 
-  it('above the viewport: aligns the target TOP', () => {
+  it('above the viewport: aligns the target BOTTOM, because that is the nearer edge (SIV-4 S2)', () => {
+    // The mirror of the case above, and the one SIV-1 got backwards. CSSOM-View
+    // does not say "an oversized target always shows its top"; it says an
+    // oversized target whose START edge is outside aligns the END edges — which
+    // is the same minimum-distance rule, seen from the other side. Measured in
+    // Chrome on playground card 12 (`from = below`): native scrollTop 430, the
+    // directive's 229, a full pane apart.
     const container = makeContainer({ scrollTop: 600, clientHeight: 200 })
     const target = document.createElement('div')
     container.appendChild(target)
@@ -1840,7 +1922,10 @@ describe('vScrollIntoView — block: nearest, target taller than the container (
     mountWithValueAndContainerSetup({ container, block: 'nearest' }, target)
     flushRaf()
 
-    expect(container.scrollTo).toHaveBeenCalledWith({ top: 200, left: 0, behavior: 'smooth' })
+    // Target occupies content [200, 600]; the scrollport is [600, 800]. Moving
+    // to 400 brings its bottom edge to the pane's bottom — 200px of travel,
+    // against the 400px that aligning its top would have cost.
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 400, left: 0, behavior: 'smooth' })
   })
 
   it('target already covering the whole container: no scroll at all', () => {
@@ -2037,5 +2122,561 @@ describe('vScrollIntoView — prefers-reduced-motion (SIV-1 B6)', () => {
       block: 'nearest',
       inline: 'nearest',
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SIV-4 — the three ways the container path diverged from native, plus the
+// modules 1.3.0 split out to fix them.
+//
+// These are the unit-level regressions. They are NOT the proof: jsdom has no
+// layout, so every number below is one the fixture was told, and a fixture can
+// be told a lie (that is exactly how S1 survived 236 tests). The proof is
+// `playground/scripts/interactions/v-scroll-into-view.mjs`, which measures the
+// same three cases against the browser's own `scrollIntoView` in a second pane.
+// What these buy is a fast red light if someone edits the arithmetic.
+// ---------------------------------------------------------------------------
+describe('vScrollIntoView — container geometry (SIV-4 S1: the border)', () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  /** Target `n` px below the container's PADDING edge, i.e. content offset `n`. */
+  function targetIn(container: HTMLElement, contentTop: number, height = 50): HTMLElement {
+    const target = document.createElement('div')
+    container.appendChild(target)
+    const rect = container.getBoundingClientRect()
+    setElementRect(target, {
+      top: rect.top + container.clientTop + contentTop - container.scrollTop,
+      left: rect.left + container.clientLeft,
+      width: 50,
+      height,
+    })
+    return target
+  }
+
+  it('block: start lands on the content offset, border or no border', () => {
+    // `getBoundingClientRect()` reports the BORDER box; `scrollTop` and
+    // `clientHeight` are measured from the PADDING box. Until 1.3.0 the origin
+    // came from one and the sizes from the other, so every container scroll was
+    // off by exactly the border width — 1px in every playground pane, which is
+    // why card 12 read `lib = nat + 1` on every row and called it parity.
+    for (const border of [0, 1, 10]) {
+      const container = makeContainer({ scrollTop: 0, clientHeight: 200, border })
+      const target = targetIn(container, 200)
+
+      mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+      flushRaf()
+
+      expect(container.scrollTo, `border=${border}`).toHaveBeenCalledWith({
+        top: 200,
+        left: 0,
+        behavior: 'smooth',
+      })
+      triggerUnmount(target)
+      container.remove()
+    }
+  })
+
+  it('every alignment is border-independent, not just start', () => {
+    // Aligned to the content offset the alignment asks for: start 200,
+    // end 200 + 50 - 200 = 50, center 200 + 25 - 100 = 125.
+    const expected = { start: 200, end: 50, center: 125 } as const
+    for (const block of ['start', 'end', 'center'] as const) {
+      const plain = makeContainer({ scrollTop: 0, clientHeight: 200, border: 0 })
+      const bordered = makeContainer({ scrollTop: 0, clientHeight: 200, border: 10 })
+      const a = targetIn(plain, 200)
+      const b = targetIn(bordered, 200)
+
+      mountWithValueAndContainerSetup({ container: plain, block }, a)
+      mountWithValueAndContainerSetup({ container: bordered, block }, b)
+      flushRaf()
+
+      expect(plain.scrollTo, block).toHaveBeenCalledWith({ top: expected[block], left: 0, behavior: 'smooth' })
+      expect(bordered.scrollTo, block).toHaveBeenCalledWith({ top: expected[block], left: 0, behavior: 'smooth' })
+      triggerUnmount(a)
+      triggerUnmount(b)
+      plain.remove()
+      bordered.remove()
+    }
+  })
+
+  it('the inline axis subtracts clientLeft, which is where an RTL scrollbar lives', () => {
+    // In RTL Chrome puts the vertical scrollbar on the LEFT, and its width is
+    // part of `clientLeft` along with the border. Reading the origin from the
+    // border box put the horizontal alignment ~15px out on every RTL list.
+    const container = makeContainer({ scrollLeft: 0, clientWidth: 200, border: 17 })
+    const target = targetIn(container, 0)
+    setElementRect(target, { top: 17, left: 17 + 300, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, inline: 'start' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 0, left: 300, behavior: 'smooth' })
+  })
+
+  it('a scale() between rect space and layout space is divided out', () => {
+    // Rect deltas are viewport pixels; `scrollTop` and `clientHeight` are layout
+    // pixels. Inside a `transform: scale(0.5)` modal the two are different
+    // units, and adding one to the other put a 600px jump 300px wrong.
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    Object.defineProperty(container, 'offsetHeight', { value: 200, configurable: true })
+    Object.defineProperty(container, 'offsetWidth', { value: 200, configurable: true })
+    // Half-scale: the same 200px border box measures 100 viewport px.
+    container.getBoundingClientRect = vi.fn(() => ({
+      top: 0, left: 0, right: 100, bottom: 100, width: 100, height: 100, x: 0, y: 0, toJSON: () => ({}),
+    })) as any
+    const target = document.createElement('div')
+    container.appendChild(target)
+    // 600 layout px down, seen at 300 viewport px.
+    setElementRect(target, { top: 300, left: 0, width: 25, height: 25 })
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 600, left: 0, behavior: 'smooth' })
+  })
+})
+
+describe('vScrollIntoView — CSS the container path now reads (SIV-2)', () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  function makeTarget(container: HTMLElement, top: number, height = 50): HTMLElement {
+    const target = document.createElement('div')
+    container.appendChild(target)
+    setElementRect(target, { top, left: 0, width: 50, height })
+    return target
+  }
+
+  it("scroll-margin-top on the target opens the same gap the browser would", () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    const target = makeTarget(container, 300)
+    target.style.scrollMarginTop = '40px'
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 260, left: 0, behavior: 'smooth' })
+  })
+
+  it('scroll-margin-bottom is what block: end reads — the trailing side, as CSS defines it', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    const target = makeTarget(container, 300)
+    target.style.scrollMarginBottom = '40px'
+
+    mountWithValueAndContainerSetup({ container, block: 'end' }, target)
+    flushRaf()
+
+    // Scroll box ends at 300 + 50 + 40 = 390; minus the 200 scrollport.
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 190, left: 0, behavior: 'smooth' })
+  })
+
+  it('offset.top OVERRIDES scroll-margin-top rather than stacking with it', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    const target = makeTarget(container, 300)
+    target.style.scrollMarginTop = '40px'
+
+    mountWithValueAndContainerSetup({ container, block: 'start', offset: { top: 10 } }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 290, left: 0, behavior: 'smooth' })
+  })
+
+  it('offset { top: 0 } removes a stylesheet gap on the container path, as it does natively', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    const target = makeTarget(container, 300)
+    target.style.scrollMarginTop = '40px'
+
+    mountWithValueAndContainerSetup({ container, block: 'start', offset: { top: 0 } }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 300, left: 0, behavior: 'smooth' })
+  })
+
+  it('scroll-padding-top on the container insets the optimal viewing region', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    container.style.scrollPaddingTop = '30px'
+    const target = makeTarget(container, 300)
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 270, left: 0, behavior: 'smooth' })
+  })
+
+  it('scroll-padding as a percentage resolves against the scrollport, not the content', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    container.style.scrollPaddingTop = '10%'
+    const target = makeTarget(container, 300)
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 280, left: 0, behavior: 'smooth' })
+  })
+})
+
+describe('vScrollIntoView — RTL and vertical writing modes', () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+    resetWarnings()
+  })
+
+  it("inline: 'start' means the RIGHT edge when the target's direction is rtl", () => {
+    // `start` and `end` are LOGICAL. The test suite advertised an "RTL probe"
+    // in a describe banner for three versions and never had one; the container
+    // path meanwhile hard-coded LTR, so `inline: 'start'` scrolled to the wrong
+    // edge entirely while the container-less path (the browser) got it right.
+    const container = makeContainer({ scrollLeft: -400, clientWidth: 200, scrollWidth: 1000 })
+    const target = document.createElement('div')
+    container.appendChild(target)
+    target.style.direction = 'rtl'
+    // RTL scrollLeft runs 0..-max, so content x = rect delta + scrollLeft.
+    setElementRect(target, { top: 0, left: 100, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, inline: 'start' }, target)
+    flushRaf()
+
+    // Content box [-300, -250]; `start` is its right edge against the
+    // scrollport's right edge: -250 - 200 = -450.
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 0, left: -450, behavior: 'smooth' })
+  })
+
+  it('a vertical writing mode warns once instead of silently scrolling the wrong axis', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    const target = document.createElement('div')
+    container.appendChild(target)
+    target.style.writingMode = 'vertical-rl'
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0][0]).toContain('vertical writing mode')
+  })
+})
+
+describe('vScrollIntoView — the scrollers between target and container (SIV-4 / finding 7)', () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+    resetWarnings()
+  })
+
+  it('an inner scroller between the target and the pinned container is scrolled too', () => {
+    // Pinning a container says "stop at this one", not "ignore the ones inside
+    // it". Before 1.3.0 only the named container moved, so an inner pane
+    // scrolled away kept the target invisible while the outer pane reported
+    // success — "it scrolls to the row most of the time".
+    const outer = makeContainer({ scrollTop: 0, clientHeight: 400 })
+    const inner = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    outer.appendChild(inner)
+    // The inner pane sits at content offset 0 of the outer one.
+    inner.getBoundingClientRect = vi.fn(() => ({
+      top: 0, left: 0, right: 200, bottom: 200, width: 200, height: 200, x: 0, y: 0, toJSON: () => ({}),
+    })) as any
+    const target = document.createElement('div')
+    inner.appendChild(target)
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container: outer, block: 'start' }, target)
+    flushRaf()
+
+    // Innermost first: the inner pane brings the target to its own top…
+    expect(inner.scrollTo).toHaveBeenCalledWith({ top: 300, left: 0, behavior: 'smooth' })
+    // …and the outer one accounts for the 300px the target just travelled, so
+    // it does not scroll to a stale position. The target is already at the
+    // outer pane's top, so there is nothing left to do.
+    expect(outer.scrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'smooth' })
+  })
+
+  it('a non-scrolling element between the two is skipped', () => {
+    const outer = makeContainer({ scrollTop: 0, clientHeight: 400 })
+    const plain = document.createElement('div')
+    outer.appendChild(plain)
+    const target = document.createElement('div')
+    plain.appendChild(target)
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container: outer, block: 'start' }, target)
+    flushRaf()
+
+    expect(outer.scrollTo).toHaveBeenCalledOnce()
+    expect(outer.scrollTo).toHaveBeenCalledWith({ top: 300, left: 0, behavior: 'smooth' })
+  })
+})
+
+describe('vScrollIntoView — a refused scroll re-arms the edge (finding 5)', () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+    resetWarnings()
+  })
+
+  it('a container that has not rendered yet does not spend the false→true edge', () => {
+    // Playground card 11 used to instruct the reader to press the button a
+    // second time. This is why: the first press spent the edge on a scroll that
+    // could not happen, and while the condition stayed true no later update was
+    // ever a transition again.
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container: '#late-pane', block: 'start' }, target)
+    flushRaf()
+
+    // The pane arrives a tick later, and the condition has not changed.
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    container.id = 'late-pane'
+    container.appendChild(target)
+
+    triggerUpdate(target, { container: '#late-pane', block: 'start' }, { container: '#late-pane', block: 'start' })
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 300, left: 0, behavior: 'smooth' })
+  })
+
+  it('deciding a nearest target is already visible DOES spend the edge', () => {
+    // Not a refusal — the correct answer. Re-arming here would turn every
+    // in-view render into a retry.
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    const target = document.createElement('div')
+    container.appendChild(target)
+    setElementRect(target, { top: 20, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, block: 'nearest' }, target)
+    flushRaf()
+    expect(container.scrollTo).not.toHaveBeenCalled()
+
+    // Now move it out of view without changing the condition. No edge left.
+    setElementRect(target, { top: 900, left: 0, width: 50, height: 50 })
+    triggerUpdate(target, { container, block: 'nearest' }, { container, block: 'nearest' })
+    flushRaf()
+    expect(container.scrollTo).not.toHaveBeenCalled()
+  })
+})
+
+describe('vScrollIntoView — a misconfigured container says so (finding 6)', () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+    resetWarnings()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+    resetWarnings()
+  })
+
+  it('a container that is not an ancestor scrolls nothing and warns', () => {
+    // `document.querySelector('.pane')` returns the FIRST `.pane` in the
+    // document, so in a `v-for` of panes every row resolved to pane #1 and the
+    // arithmetic ran against an element the target does not live in — yanking
+    // the wrong pane to a nonsense offset, silently.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const paneA = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    paneA.className = 'pane'
+    const paneB = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    paneB.className = 'pane'
+    const target = document.createElement('div')
+    paneB.appendChild(target)
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container: '.pane', block: 'start' }, target)
+    flushRaf()
+
+    expect(paneA.scrollTo).not.toHaveBeenCalled()
+    expect(paneB.scrollTo).not.toHaveBeenCalled()
+    expect(warn.mock.calls[0][0]).toContain(':scope')
+  })
+
+  it(':scope walks up from the element, so each row finds its own pane', () => {
+    const paneA = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    paneA.className = 'pane'
+    const paneB = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    paneB.className = 'pane'
+    const target = document.createElement('div')
+    paneB.appendChild(target)
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container: ':scope .pane', block: 'start' }, target)
+    flushRaf()
+
+    expect(paneA.scrollTo).not.toHaveBeenCalled()
+    expect(paneB.scrollTo).toHaveBeenCalledWith({ top: 300, left: 0, behavior: 'smooth' })
+  })
+
+  it('a container with nothing to scroll warns, once, rather than doing nothing quietly', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200, scrollHeight: 200, scrollWidth: 200 })
+    const target = document.createElement('div')
+    container.appendChild(target)
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0][0]).toContain('no scrollable overflow')
+
+    // A second element with the same misconfiguration does not warn again.
+    const other = document.createElement('div')
+    container.appendChild(other)
+    setElementRect(other, { top: 300, left: 0, width: 50, height: 50 })
+    mountWithValueAndContainerSetup({ container, block: 'start' }, other)
+    flushRaf()
+    expect(warn).toHaveBeenCalledOnce()
+  })
+})
+
+describe('vScrollIntoView — nearest decides against where a smooth scroll is going (finding 10)', () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  it('a target visible only at the CURRENT position still scrolls, because the pane is leaving', () => {
+    // Hold the arrow key: a smooth scroll is mid-flight, so `scrollTop` is a
+    // coordinate that has not arrived. Judged against it the next row often
+    // reads as visible, the request is answered with "nothing to do", and the
+    // OLD animation carries on to a destination computed for a different row.
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    resetDestinations(container)
+    const first = document.createElement('div')
+    container.appendChild(first)
+    setElementRect(first, { top: 800, left: 0, width: 50, height: 50 })
+
+    // Request one: travel to content 800.
+    mountWithValueAndContainerSetup({ container, block: 'start' }, first)
+    flushRaf()
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 800, left: 0, behavior: 'smooth' })
+
+    // Request two, while that scroll is still at scrollTop 0: a row at content
+    // 100 is visible NOW and will be 700px above the fold when the pane lands.
+    const second = document.createElement('div')
+    container.appendChild(second)
+    setElementRect(second, { top: 100, left: 0, width: 50, height: 50 })
+    mountWithValueAndContainerSetup({ container, block: 'nearest' }, second)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenLastCalledWith({ top: 100, left: 0, behavior: 'smooth' })
+  })
+
+  it('once the pane has arrived, the live position is used again', () => {
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    resetDestinations(container)
+    const first = document.createElement('div')
+    container.appendChild(first)
+    setElementRect(first, { top: 800, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, first)
+    flushRaf()
+
+    // The scroll finishes.
+    ;(container as any).scrollTop = 800
+    container.dispatchEvent(new Event('scrollend'))
+
+    const second = document.createElement('div')
+    container.appendChild(second)
+    setElementRect(second, { top: -700, left: 0, width: 50, height: 50 })
+    mountWithValueAndContainerSetup({ container, block: 'nearest' }, second)
+    flushRaf()
+
+    // Content 100, scrollport [800, 1000]: out of view above, so it scrolls.
+    expect(container.scrollTo).toHaveBeenLastCalledWith({ top: 100, left: 0, behavior: 'smooth' })
+  })
+})
+
+describe("vScrollIntoView — the README's own trigger recipe (finding 9)", () => {
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+  })
+
+  it('a condition that goes true and back to false inside one frame still scrolls', () => {
+    // README's anchor-navigation recipe is `activeId = id` followed by
+    // `requestAnimationFrame(() => activeId = null)`, and five playground demos
+    // copy the same ritual. It works because `updated()` returns on a false
+    // condition WITHOUT touching the queued frame — an omission, not a
+    // decision, until this test made it one. The obvious-looking hardening
+    // ("cancel the pending scroll when the condition goes false") breaks every
+    // documented trigger pattern in the package, silently, with green tests.
+    const { el } = mountWithValue(false)
+    triggerUpdate(el, true, false)
+    triggerUpdate(el, false, true)
+    flushRaf()
+
+    expect(el.scrollIntoView).toHaveBeenCalledOnce()
+  })
+
+  it('and the falling edge re-arms, so the next click on the same link scrolls again', () => {
+    const { el } = mountWithValue(false)
+    triggerUpdate(el, true, false)
+    triggerUpdate(el, false, true)
+    flushRaf()
+    triggerUpdate(el, true, false)
+    flushRaf()
+
+    expect(el.scrollIntoView).toHaveBeenCalledTimes(2)
   })
 })
