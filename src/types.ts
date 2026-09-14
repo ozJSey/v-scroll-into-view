@@ -4,8 +4,23 @@
  * Leaf module: imports nothing.
  */
 
-/** Every form the `container` option accepts. Resolved at scroll time. */
-export type ContainerRef = HTMLElement | string | (() => HTMLElement | null)
+/**
+ * Every form the `container` option accepts. Resolved at scroll time.
+ *
+ * `null` is in the union on purpose, and was added in 1.3.1. A template ref is
+ * `HTMLElement | null`, so `container: paneRef.value` is the spelling everyone
+ * reaches for first — and without a `null` arm TypeScript rejected it and
+ * pushed people to `container: paneRef.value ?? undefined` instead. That one
+ * type-checks and is WRONG: `undefined` means "no container", so on the render
+ * before the ref is assigned the directive falls back to native
+ * `scrollIntoView` and scrolls the page. `null` means "a container was asked
+ * for and there isn't one" — nothing scrolls, and it says so once per element.
+ *
+ * Neither spelling is the right one, mind: both are read during render, before
+ * the parent has assigned the ref. `() => paneRef.value` is resolved at scroll
+ * time and is the form to reach for.
+ */
+export type ContainerRef = HTMLElement | string | (() => HTMLElement | null) | null
 
 /**
  * Options accepted by the `v-scroll-into-view` directive.
@@ -58,6 +73,13 @@ export type VScrollIntoViewOptions = {
    * to native `scrollIntoView`, so `container` always wins when set. A plain
    * CSS selector matches the first element in the whole document; inside a
    * `v-for` of panes use the `:scope <sel>` form.
+   *
+   * `undefined` is the exception, because `undefined` is how JavaScript spells
+   * "absent": it means no container and the scroll goes to native
+   * `scrollIntoView`. Since 1.3.1 that warns, because the directive cannot tell
+   * a deliberate `undefined` from `paneRef.value ?? undefined` — which is the
+   * same value arrived at by accident. To say "no container" without the
+   * warning, leave the key out: `{ ...base, ...(pane && { container: pane }) }`.
    */
   container?: ContainerRef
   /**
@@ -113,5 +135,12 @@ export interface ResolvedOptions {
   inline: ScrollLogicalPosition
   always: boolean
   container: ContainerRef | undefined
+  /**
+   * Whether the binding actually carried a `container` key — which is not the
+   * same as whether it resolved to anything. `{ container: undefined }` and an
+   * options bag with no `container` at all behave identically (both go to
+   * native), but only the first is worth a warning.
+   */
+  containerKeyPresent: boolean
   offset: { top?: number; left?: number } | undefined
 }

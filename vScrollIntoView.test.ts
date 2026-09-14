@@ -450,6 +450,7 @@ describe('vScrollIntoView — container option', () => {
   })
 
   it('container resolving to null: no-op, no throw, no native fallback', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     const target = document.createElement('div')
     document.body.appendChild(target)
     target.scrollIntoView = vi.fn()
@@ -463,7 +464,65 @@ describe('vScrollIntoView — container option', () => {
     expect(target.scrollIntoView).not.toHaveBeenCalled()
   })
 
+  it('container: null is the same no-op — and since 1.3.1 it type-checks (SIV-6 #2)', () => {
+    // The spelling everyone reaches for is `container: paneRef.value`, whose
+    // type is `HTMLElement | null`. Until 1.3.1 `ContainerRef` had no `null`
+    // arm, so TypeScript rejected it and pushed people to
+    // `container: paneRef.value ?? undefined` — which type-checks and is wrong,
+    // because `undefined` means "no container" and falls back to native. Note
+    // the `satisfies`: the point of this test is as much that it COMPILES.
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    target.scrollIntoView = vi.fn()
+    setElementRect(target, { top: 100, left: 0, width: 50, height: 50 })
+    const paneRef: { value: HTMLElement | null } = { value: null }
+
+    const opts = { container: paneRef.value, block: 'start' } satisfies VScrollIntoViewOptions
+    mountWithValueAndContainerSetup(opts, target)
+    flushRaf()
+
+    expect(target.scrollIntoView).not.toHaveBeenCalled()
+  })
+
+  it('container: undefined falls back to native — and says so, instead of scrolling the page quietly', () => {
+    // The other half of SIV-6 #2. `?? undefined` is what the old type forced,
+    // and on the mount-time scroll (the ref is assigned after this element
+    // renders) it silently scrolled every ancestor, page included — the exact
+    // thing `container` exists to prevent.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    target.scrollIntoView = vi.fn()
+    setElementRect(target, { top: 100, left: 0, width: 50, height: 50 })
+    const paneRef: { value: HTMLElement | null } = { value: null }
+
+    mountWithValueAndContainerSetup({ container: paneRef.value ?? undefined, block: 'start' }, target)
+    flushRaf()
+
+    expect(target.scrollIntoView).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0][0]).toContain('() => paneRef.value')
+  })
+
+  it('an options bag with no container key at all is not warned about', () => {
+    // `{}` and `{ container: undefined }` resolve to the same value; only the
+    // second is someone asking for something they did not get.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    target.scrollIntoView = vi.fn()
+    setElementRect(target, { top: 100, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ block: 'start' }, target)
+    flushRaf()
+
+    expect(target.scrollIntoView).toHaveBeenCalledOnce()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('container detached from DOM at rAF flush: skips scroll silently', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     const container = makeContainer()
     const target = document.createElement('div')
     container.appendChild(target)
@@ -783,6 +842,12 @@ describe('vScrollIntoView — hardening', () => {
     nextRafId = 1
     vi.stubGlobal('requestAnimationFrame', mockRaf)
     vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+    // These cases all reach a `container` that resolves to nothing, which has
+    // warned since 1.3.0 — "silent" here means no scroll and no throw, not no
+    // console. Swallow it so the suite output stays readable; the warnings have
+    // a describe of their own. (Before 1.3.1 the global latch swallowed them
+    // for free, which is precisely what made the latch useless.)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
   afterEach(() => {
@@ -1545,6 +1610,12 @@ describe('vScrollIntoView — malformed selectors (resolveContainer hardening)',
     nextRafId = 1
     vi.stubGlobal('requestAnimationFrame', mockRaf)
     vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+    // These cases all reach a `container` that resolves to nothing, which has
+    // warned since 1.3.0 — "silent" here means no scroll and no throw, not no
+    // console. Swallow it so the suite output stays readable; the warnings have
+    // a describe of their own. (Before 1.3.1 the global latch swallowed them
+    // for free, which is precisely what made the latch useless.)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
   })
 
   afterEach(() => {
@@ -2244,6 +2315,45 @@ describe('vScrollIntoView — container geometry (SIV-4 S1: the border)', () => 
 
     expect(container.scrollTo).toHaveBeenCalledWith({ top: 600, left: 0, behavior: 'smooth' })
   })
+
+  it('a pane whose box is not a whole number of pixels is measured exactly anyway', () => {
+    // `offsetWidth` is rounded and `getBoundingClientRect()` is not, so a pane
+    // sized by a `1fr` grid column reports 463.40625 / 463 = 1.00088 with no
+    // transform on the page at all. The ratio divides `rel`, so the error grows
+    // with distance into the content: measured in Chrome on a 960px rail, a
+    // target 600px in landed exactly 1px short of native on `inline: 'end'`.
+    // `clientWidth` is the other half: it is rounded to 461 while the scrollport
+    // really is 461.40625 wide, and on `center` that half-pixel is enough to
+    // land on the other side of a rounding boundary from the browser. Both were
+    // found by the SIV-6 direction sweep, which is the first parity sweep in
+    // this repo to run on a pane whose width is not an integer.
+    const container = makeContainer({
+      scrollLeft: 0,
+      clientWidth: 461,
+      scrollWidth: 960,
+      clientHeight: 200,
+      border: 1,
+    })
+    // `offsetWidth` 463 comes from the fixture; only the RECT is fractional,
+    // which is exactly the asymmetry the browser has.
+    container.getBoundingClientRect = vi.fn(() => ({
+      top: 0, left: 0, right: 463.40625, bottom: 202, width: 463.40625, height: 202, x: 0, y: 0,
+      toJSON: () => ({}),
+    })) as any
+    const target = document.createElement('div')
+    container.appendChild(target)
+    // Content x 600…720, with the container's 1px border between the two rects.
+    setElementRect(target, { top: 0, left: 601, width: 120, height: 70 })
+
+    mountWithValueAndContainerSetup({ container, inline: 'end' }, target)
+    flushRaf()
+
+    // The browser's own answer: content x 720 against a scrollport whose right
+    // edge is 461.40625 layout px from its left. Believing the 1.00088 "scale"
+    // gives 258.37; rounding the scrollport to `clientWidth` gives 259. Chrome,
+    // measured, gives this.
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 0, left: 258.59375, behavior: 'smooth' })
+  })
 })
 
 describe('vScrollIntoView — CSS the container path now reads (SIV-2)', () => {
@@ -2356,6 +2466,11 @@ describe('vScrollIntoView — RTL and vertical writing modes', () => {
     const container = makeContainer({ scrollLeft: -400, clientWidth: 200, scrollWidth: 1000 })
     const target = document.createElement('div')
     container.appendChild(target)
+    // BOTH, and they are not the same fact — see the mixed-direction block
+    // below. Until 1.3.1 this fixture set only the target's and still passed,
+    // because one flag was doing both jobs; the `scrollLeft: -400` it was given
+    // is a coordinate no LTR pane can hold.
+    container.style.direction = 'rtl'
     target.style.direction = 'rtl'
     // RTL scrollLeft runs 0..-max, so content x = rect delta + scrollLeft.
     setElementRect(target, { top: 0, left: 100, width: 50, height: 50 })
@@ -2381,6 +2496,159 @@ describe('vScrollIntoView — RTL and vertical writing modes', () => {
 
     expect(warn).toHaveBeenCalledOnce()
     expect(warn.mock.calls[0][0]).toContain('vertical writing mode')
+  })
+})
+
+describe('vScrollIntoView — target direction and container direction are two facts (SIV-6 #1)', () => {
+  /**
+   * 1.3.0 read one flag off the target and used it for both jobs:
+   *
+   *   - WHICH physical edge `inline: 'start'` names — genuinely the target's,
+   *     and measured: Chrome aligns the right edge of a `dir="rtl"` card even
+   *     inside an LTR rail;
+   *   - the SIGN of the container's `scrollLeft` range — genuinely the
+   *     container's, because an LTR scroller runs `0 … +maxLeft` whatever is
+   *     written inside it.
+   *
+   * Mixing them clamped every positive destination into a negative range (or
+   * the reverse), which is `scrollLeft 0` — 256 of 384 measured rows in the
+   * certification sweep, and 100% of the mixed-direction ones. The realistic
+   * shape is an LTR card rail whose items carry `dir="auto"` for
+   * user-generated text.
+   */
+  beforeEach(() => {
+    rafCallbacks = []
+    nextRafId = 1
+    vi.stubGlobal('requestAnimationFrame', mockRaf)
+    vi.stubGlobal('cancelAnimationFrame', mockCancelRaf)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+    resetWarnings()
+  })
+
+  /** An LTR rail, 200px of scrollport over 1000px of content. */
+  function ltrRail(scrollLeft = 0) {
+    return makeContainer({ scrollLeft, clientWidth: 200, scrollWidth: 1000, clientHeight: 200 })
+  }
+
+  it("an RTL target in an LTR pane scrolls to a POSITIVE scrollLeft, not to 0", () => {
+    const container = ltrRail()
+    const target = document.createElement('div')
+    container.appendChild(target)
+    target.style.direction = 'rtl'
+    setElementRect(target, { top: 0, left: 500, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, inline: 'start' }, target)
+    flushRaf()
+
+    // `start` on an RTL target is its RIGHT edge (550) against the scrollport's
+    // right edge (200) — 350 in the LTR pane's own 0…800 range. 1.3.0 clamped
+    // that into -800…0 and landed on 0, with the card off-screen.
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 0, left: 350, behavior: 'smooth' })
+  })
+
+  it('the logical flip itself is untouched: `end` on the same target is its LEFT edge', () => {
+    // The half of 1.3.0 that was right. Native agrees, so a "fix" that moved
+    // this read to the container would break what the sweep already certified.
+    const container = ltrRail()
+    const target = document.createElement('div')
+    container.appendChild(target)
+    target.style.direction = 'rtl'
+    setElementRect(target, { top: 0, left: 500, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, inline: 'end' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 0, left: 500, behavior: 'smooth' })
+  })
+
+  it('an LTR target in an RTL pane scrolls to a NEGATIVE scrollLeft, not to 0', () => {
+    const container = makeContainer({
+      scrollLeft: -400,
+      clientWidth: 200,
+      scrollWidth: 1000,
+      clientHeight: 200,
+    })
+    container.style.direction = 'rtl'
+    const target = document.createElement('div')
+    container.appendChild(target)
+    setElementRect(target, { top: 0, left: 100, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, inline: 'start' }, target)
+    flushRaf()
+
+    // Content x -300; `start` on an LTR target is its left edge against the
+    // scrollport's left edge. 1.3.0 clamped -300 into 0…800 and stayed put.
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 0, left: -300, behavior: 'smooth' })
+  })
+
+  it('a VERTICAL-only scroll leaves scrollLeft exactly where it was', () => {
+    // The regression half, and the part that is strictly worse than 1.2.0.
+    // `inline` defaults to `'nearest'`, so a target that is already
+    // horizontally visible computes `null` — and 1.3.0 still ran that null
+    // through the clamp, rewriting a coordinate nobody asked about. Measured
+    // against the published artifact: a pane at 650 jumped to 0.
+    const container = ltrRail(650)
+    const target = document.createElement('div')
+    container.appendChild(target)
+    target.style.direction = 'rtl'
+    setElementRect(target, { top: 300, left: 20, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 300, left: 650, behavior: 'smooth' })
+  })
+
+  it('an axis that computed null is passed through, not re-clamped', () => {
+    // The second half of the regression, and the one that survives the sign
+    // fix. `scrollWidth` and `clientWidth` are ROUNDED integers while
+    // `scrollLeft` is fractional, so a pane sitting at its true maximum can
+    // read as 0.4px past the maximum those two describe — and re-clamping a
+    // coordinate nobody asked about then nudges it. `null` means "this axis is
+    // already right"; the only correct thing to do with it is nothing.
+    const container = makeContainer({
+      scrollLeft: 800.4,
+      clientWidth: 200,
+      scrollWidth: 1000,
+      clientHeight: 200,
+    })
+    const target = document.createElement('div')
+    container.appendChild(target)
+    // Horizontally inside the scrollport (content x 820.4…870.4 against a
+    // viewing region of 800.4…1000.4), so `inline: 'nearest'` has nothing to do.
+    setElementRect(target, { top: 300, left: 20, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(container.scrollTo).toHaveBeenCalledWith({ top: 300, left: 800.4, behavior: 'smooth' })
+  })
+
+  it('an untouched axis reports zero movement to the scroller outside it', () => {
+    // `scrollOne` returns how far it moved so the next scroller out can
+    // subtract it. An axis that was passed straight through has moved by
+    // nothing, and saying otherwise walks the outer pane off by that much.
+    const outer = makeContainer({ scrollLeft: 650, clientWidth: 400, scrollWidth: 2000, clientHeight: 400 })
+    const inner = ltrRail(650)
+    outer.appendChild(inner)
+    inner.getBoundingClientRect = vi.fn(() => ({
+      top: 0, left: 0, right: 200, bottom: 200, width: 200, height: 200, x: 0, y: 0, toJSON: () => ({}),
+    })) as any
+    const target = document.createElement('div')
+    inner.appendChild(target)
+    target.style.direction = 'rtl'
+    setElementRect(target, { top: 300, left: 20, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container: outer, block: 'start' }, target)
+    flushRaf()
+
+    expect(inner.scrollTo).toHaveBeenCalledWith({ top: 300, left: 650, behavior: 'smooth' })
+    // The outer pane's horizontal offset is equally untouched.
+    expect((outer.scrollTo as any).mock.calls[0][0].left).toBe(650)
   })
 })
 
@@ -2552,9 +2820,12 @@ describe('vScrollIntoView — a misconfigured container says so (finding 6)', ()
     expect(paneB.scrollTo).toHaveBeenCalledWith({ top: 300, left: 0, behavior: 'smooth' })
   })
 
-  it('a container with nothing to scroll warns, once, rather than doing nothing quietly', () => {
+  it('a container whose overflow can never scroll warns, rather than doing nothing quietly', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const container = makeContainer({ scrollTop: 0, clientHeight: 200, scrollHeight: 200, scrollWidth: 200 })
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200 })
+    // The mistake this names: the selector matched the wrapper AROUND the pane.
+    container.style.overflowY = 'visible'
+    container.style.overflowX = 'visible'
     const target = document.createElement('div')
     container.appendChild(target)
     setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
@@ -2565,13 +2836,55 @@ describe('vScrollIntoView — a misconfigured container says so (finding 6)', ()
     expect(warn).toHaveBeenCalledOnce()
     expect(warn.mock.calls[0][0]).toContain('no scrollable overflow')
 
-    // A second element with the same misconfiguration does not warn again.
+    // The SAME element repeating is still latched.
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+    expect(warn).toHaveBeenCalledOnce()
+
+    // A SECOND element with the same misconfiguration is told too (SIV-6 #3).
+    // Latching globally per message made the first element to reach a sentence
+    // spend it for the session, so an unrelated broken row downstream was
+    // silent — and one false alarm disarmed every other message as well.
     const other = document.createElement('div')
     container.appendChild(other)
     setElementRect(other, { top: 300, left: 0, width: 50, height: 50 })
     mountWithValueAndContainerSetup({ container, block: 'start' }, other)
     flushRaf()
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
+  it('a correctly configured pane that is simply not full yet says nothing', () => {
+    // SIV-6 #3's false alarm: an empty chat pane with `overflow-y: auto` is not
+    // a misconfiguration, it is a chat nobody has written in. 1.3.0 warned
+    // about it at page load — and, latching globally, that one line then
+    // silenced `container: 'body'` and every detached container after it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const container = makeContainer({ scrollTop: 0, clientHeight: 200, scrollHeight: 200, scrollWidth: 200 })
+    const target = document.createElement('div')
+    container.appendChild(target)
+    setElementRect(target, { top: 10, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container, block: 'start' }, target)
+    flushRaf()
+
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it("`container: 'body'` is told the document scrolls through <html>, not sent looking for an overflow", () => {
+    // body normally DOES overflow — it is just not the scroller. The generic
+    // "check the element carrying overflow: auto" sentence sends the reader to
+    // a place where there is nothing to find.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    document.body.scrollTo = vi.fn()
+    setElementRect(target, { top: 300, left: 0, width: 50, height: 50 })
+
+    mountWithValueAndContainerSetup({ container: 'body', block: 'start' }, target)
+    flushRaf()
+
     expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0][0]).toContain("container: 'html'")
   })
 })
 

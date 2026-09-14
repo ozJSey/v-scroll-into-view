@@ -61,6 +61,10 @@ export function resolveBinding(value: boolean | VScrollIntoViewOptions | undefin
     inline: obj.inline ?? 'nearest',
     always: obj.always ?? false,
     container: obj.container,
+    // `in`, not a truthiness test: the whole point is to tell `{}` apart from
+    // `{ container: undefined }`, which resolve to the same value and to very
+    // different intents.
+    containerKeyPresent: isObj && 'container' in obj,
     offset: obj.offset,
   }
 }

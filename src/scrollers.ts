@@ -15,13 +15,29 @@ function overflows(el: HTMLElement): boolean {
   return el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth
 }
 
+/**
+ * True when this element's `overflow` makes it a scroll container at all —
+ * whether or not it has anything to scroll RIGHT NOW.
+ *
+ * The distinction is the whole of the warning in `execute-scroll.ts`. A chat
+ * pane with `overflow-y: auto` and two messages in it is configured correctly
+ * and merely not full yet; warning about it fires on every fresh session of a
+ * working app, and that false alarm is what used to spend the global warning
+ * latch. A wrapper with `overflow: visible` cannot scroll whatever you put in
+ * it, and THAT is the mistake worth a sentence.
+ *
+ * The document element is exempt: it scrolls the viewport regardless of what
+ * its computed `overflow` says, which is why `container: 'html'` works.
+ */
+export function canScroll(el: HTMLElement): boolean {
+  if (el === el.ownerDocument.documentElement) return true
+  const style = getComputedStyle(el)
+  return SCROLLABLE_OVERFLOW.has(style.overflowY) || SCROLLABLE_OVERFLOW.has(style.overflowX)
+}
+
 /** True when this element has a scrollport that can actually be moved. */
 export function isScrollable(el: HTMLElement): boolean {
-  const style = getComputedStyle(el)
-  if (!SCROLLABLE_OVERFLOW.has(style.overflowY) && !SCROLLABLE_OVERFLOW.has(style.overflowX)) {
-    return false
-  }
-  return overflows(el)
+  return canScroll(el) && overflows(el)
 }
 
 /**

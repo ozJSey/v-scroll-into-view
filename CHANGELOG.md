@@ -7,6 +7,90 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 `PROGRESS.md` and the source's own notes — this file starts at the point where the package began
 keeping one, and says so rather than inventing detail it cannot source.
 
+## [1.3.1] — 2026-09-14
+
+A blind certification of the **published 1.3.0 tarball** (SIV-6) — the certifier unpacked it,
+diffed it byte-for-byte against a fresh build of the source, and then ran ~2,400 rows of its own
+parity sweeps against `Element.scrollIntoView()`. Four of the five sweeps came back with zero
+divergences. The fifth, 384 rows of direction combinations, came back with 256.
+
+This release is that defect, its regression half, the API trap that made the container path fall
+back to native without saying so, and two sub-pixel divergences found while building the sweep that
+now guards all of it.
+`playground/src/demos/v-scroll-into-view/16-direction.vue` is new and is the horizontal counterpart
+to card 15: two identical rails, one moved by this package and one by the browser, compared at
+**exact** `scrollLeft` across pane `direction` × target `direction` × `inline`
+`start|center|end|nearest` × both ends of the rail, plus one vertical-only row per direction pair.
+36 rows, no tolerance.
+
+### Fixed
+
+- **A target whose `direction` differed from its container's broke the horizontal axis entirely.**
+  Two different facts wear the same word, and 1.3.0 read one flag off the target and used it for
+  both: WHICH physical edge `inline: 'start'` names (genuinely the target's — Chrome aligns the
+  right edge of a `dir="rtl"` card even inside an LTR rail, and that is measured, not assumed) and
+  THE SIGN of the container's `scrollLeft` range (genuinely the container's — an LTR scroller runs
+  `0 … +max` whatever is written inside it). Mixing them clamped a positive destination into a
+  negative range, which is `scrollLeft 0`, every alignment, every time. The realistic shape is this
+  package's own headline use case: a horizontally scrollable LTR card rail whose items carry
+  `dir="auto"` for user-generated text. Certified: LTR pane + RTL target 128/128 rows wrong, RTL
+  pane + LTR target 128/128 wrong, matched directions 0/128. *Negative control: taking the clamp
+  sign from the target again reddens 3 unit tests and 3 of the 36 sweep rows plus both single-row
+  direction checks in the playground; matched-direction rows stay green.*
+- **A vertical-only scroll moved the horizontal axis.** `inline` defaults to `'nearest'`, which
+  computes `null` for a target that is already horizontally visible — and 1.3.0 ran that `null`
+  through the clamp anyway (`clamp(left ?? container.scrollLeft, …)`), rewriting a coordinate
+  nobody had asked about. Measured against the published artifact with a `dir="rtl"` target: a pane
+  at `scrollLeft 650` went to 0, where 1.2.0 and native both stayed at 650 — strictly worse than
+  the version it replaced. An axis that computes `null` is now passed through untouched, and
+  reports zero movement to the scroller outside it. *Negative control: re-clamping it reddens the
+  sub-pixel pass-through test.*
+- **A pane whose width was not a whole number of pixels was treated as if it were scaled.**
+  `offsetWidth` / `offsetHeight` are rounded to whole pixels and `getBoundingClientRect()` is not,
+  so a pane sized by a `1fr` grid column — 463.40625px — produced a scale ratio of 1.00088 with no
+  transform anywhere on the page. The ratio divides `rel`, so the error was proportional to how far
+  into the content the target sat: measured on a 960px rail, 1px short of native for a target 600px
+  in. A difference of less than one layout pixel is now read as rounding rather than as a
+  transform; a real `scale(0.5)` is 200px away from that threshold. Found by the new direction
+  sweep, which is the first parity sweep here to run on a pane whose width is not an integer.
+- **The scrollport was measured with `clientWidth` / `clientHeight`, which are rounded.** Every
+  other input to the arithmetic is fractional, so the rounding landed in `portEnd` — and on
+  `center`, where it is halved, it was enough to put a destination of 429.5 on the other side of a
+  rounding boundary from the browser's 429.3. The scrollport is now derived from the rect minus the
+  computed borders and the scrollbar, which is exact. *Negative control for both of the above:
+  restoring either one reddens the same unit test, and 4 of the 36 sweep rows — all of them
+  `center`, all of them by 1px.*
+
+### Changed
+
+- **`ContainerRef` admits `null`.** `container: paneRef.value` is the spelling everyone reaches for
+  and TypeScript rejected it, because a template ref is `HTMLElement | null` and the union had no
+  `null` arm. The spelling that compiled instead — `container: paneRef.value ?? undefined` — is the
+  wrong one: `undefined` means "no container", so on the mount-time scroll (the binding is computed
+  while the host renders, before the parent assigns the ref) the directive took the **native** path
+  and moved every scrollable ancestor, the page included. That is the one thing `container` exists
+  to prevent, and it was silent. `null` now type-checks and behaves: nothing scrolls, no fallback,
+  one warning. **The form to reach for is still the getter** — `container: () => paneRef.value` —
+  which is resolved at scroll time and is what the README now leads with.
+- **A `container` key whose value is `undefined` now warns.** It still falls back to native, because
+  `undefined` is how JavaScript spells "absent" and changing that in a patch would break code that
+  deliberately writes `container: enabled ? pane : undefined`. But it is no longer silent about
+  having done so. Omitting the key entirely is unchanged and unwarned.
+- **Warnings latch per element, not globally per message.** One `Set` of strings for the whole
+  session meant the first element to reach a sentence spent it for every element after it: an
+  identical misconfiguration on an unrelated row produced nothing, and a single false alarm
+  disarmed every other message too. Each element now says each sentence once. Identical strings are
+  what a console groups, so a `v-for` of broken rows collapses behind a repeat badge rather than
+  being silently dropped.
+- **"`container` has no scrollable overflow" fires on the `overflow` style, not on the current
+  content.** A chat pane with `overflow-y: auto` and two messages in it is correctly configured and
+  simply not full yet — the package's own `always` demo tripped this warning at page load, on a
+  perfectly good card, and thereby spent the global latch before anything real could use it. Only an
+  `overflow` that can never scroll is warned about now.
+- **`container: 'body'` gets its own sentence.** The generic warning was wrong about it: `<body>`
+  usually does overflow, it is simply not the thing that scrolls. The message now names the document
+  element, and `container: 'html'` is exempt from the warning entirely.
+
 ## [1.3.0] — 2026-09-13
 
 The `container` path is the only reason to install this over native `scrollIntoView`, and it was

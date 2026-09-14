@@ -17,7 +17,7 @@ vScrollIntoView.ts             entry — re-exports src/index
     │   ├── scrollers.ts       the scrollers between the target and the pinned container
     │   └── pending-scroll.ts  where an in-flight smooth scroll is heading
     ├── resolve.ts             binding normalization, `behavior`, the four container forms
-    ├── warn.ts                one-shot console warnings
+    ├── warn.ts                console warnings, latched once per element per message
     ├── state.ts               per-element WeakMap + data-scroll-into-view-state
     └── types.ts               public types + internal ResolvedOptions
 ```
@@ -46,9 +46,17 @@ independently:
     carry the vertical scrollbar's width when it sits on the left, as it does in RTL. Every
     container scroll was off by the border width until 1.3.0.
   - **Space.** Rects are viewport pixels, scroll offsets are layout pixels. A `transform: scale()`
-    above the container makes those different units.
-  - **Direction.** `start`/`end` are logical, and resolve against the target's computed
-    `direction`.
+    above the container makes those different units. The ratio that measures it comes from
+    `offsetWidth`, which is ROUNDED — so a difference of less than one layout pixel is rounding, not
+    a transform, and is ignored (1.3.1).
+  - **Precision.** `clientWidth` / `clientHeight` / `offsetWidth` / `offsetHeight` are the only
+    rounded numbers the browser will give you here; everything else is fractional. Mixing the two
+    put `center` a pixel off native on any pane whose width is not an integer — which is every pane
+    sized by a `1fr` column or a percentage. The scrollport is derived from the rect instead (1.3.1).
+  - **Direction, twice.** `start`/`end` are logical and resolve against the TARGET's computed
+    `direction`; the sign of the container's `scrollLeft` range comes from the CONTAINER's. One
+    flag for both jobs (1.3.0) broke every mixed-direction pane, and a `null` inline axis run
+    through the resulting clamp broke vertical-only scrolls in them as well (1.3.1).
 
 Three consequences of the executor's invariant are load-bearing:
 
@@ -68,10 +76,18 @@ fixture was told — and a fixture can be told a lie: the old `makeContainer()` 
 clientHeight and scrollTop as three free numbers, could not express a border at all, and therefore
 made the border defect undetectable while pinning 236 tests green.
 
-The proof is `playground/src/demos/v-scroll-into-view/15-parity-matrix.vue`: two identical panes,
-one moved by this package and one by the browser's own `scrollIntoView`, compared at exact
-`scrollTop` across 192 geometries (border × padding × target size × offset × alignment × approach
-direction). `playground/scripts/interactions/v-scroll-into-view.mjs` runs it headless.
+The proof is two sweeps, both of which put this package and the browser's own `scrollIntoView` on
+identical panes and compare them at an exact pixel:
+
+- `playground/src/demos/v-scroll-into-view/15-parity-matrix.vue` — the vertical axis, 192
+  geometries (border × padding × target size × offset × alignment × approach direction);
+- `playground/src/demos/v-scroll-into-view/16-direction.vue` — the horizontal axis, 36 rows
+  (pane `direction` × target `direction` × `inline` × both ends of the rail, plus a vertical-only
+  row per direction pair). Card 15 pins `inline` to `'nearest'` on equal-width panes, so it could
+  not see the direction defect SIV-6 found in the published 1.3.0 — nor the two sub-pixel ones the
+  new sweep turned up on its own, which only appear on a pane whose width is not a whole number.
+
+`playground/scripts/interactions/v-scroll-into-view.mjs` runs both headless.
 
 Copy-paste consumers: every file under `src/` plus the entry is self-contained TypeScript with no
 dependencies beyond the `vue` peer — take the folder as-is.

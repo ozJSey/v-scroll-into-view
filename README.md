@@ -1,8 +1,9 @@
 # @ozjsey/v-scroll-into-view
 
-**See it live: [ozjsey.github.io/npm-portfolio-playground#v-scroll-into-view](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view)** — fifteen cards, every one editable in the browser.
+**See it live: [ozjsey.github.io/npm-portfolio-playground#v-scroll-into-view](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view)** — sixteen cards, every one editable in the browser.
 
 Straight to a card: [the parity sweep](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/parity-matrix) ·
+[the direction sweep](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/direction) ·
 [custom container](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/container) · [sticky-header offset](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/offset) ·
 [alignment](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/alignment) · [`useScrollIntoView`](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/composable) ·
 [the state attribute](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/state-attribute).
@@ -12,7 +13,10 @@ Straight to a card: [the parity sweep](https://ozjsey.github.io/npm-portfolio-pl
 [**The parity sweep**](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/parity-matrix) is the one to open first if you are deciding whether to
 trust this over native `scrollIntoView`: it sweeps the `container` path against the browser's own
 `scrollIntoView` on an identical pane across 192 geometries — border, padding, target size, offset,
-alignment, and which side the target is approached from — and prints one number. Source:
+alignment, and which side the target is approached from — and prints one number. Its horizontal
+counterpart is [**the direction sweep**](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/direction), which
+runs the same comparison across every combination of the pane's `direction`, the target's
+`direction` and the four `inline` alignments — the axis 1.3.0 got wrong and 1.3.1 fixes. Source:
 [npm-portfolio-playground](https://github.com/ozJSey/npm-portfolio-playground).
 
 [![npm](https://img.shields.io/npm/v/@ozjsey/v-scroll-into-view)](https://www.npmjs.com/package/@ozjsey/v-scroll-into-view)
@@ -25,7 +29,8 @@ A Vue 3 directive that calls `Element.scrollIntoView()` when a boolean condition
 
 - Edge detection: scrolls only on `false` → `true` transitions (not on every re-render)
 - `condition` boolean, options object, or bare `<div v-scroll-into-view>`
-- Configurable `behavior` (`'smooth' | 'instant' | 'auto'`), `block`, `inline` — the native alignment rules, `nearest` included, applied to the container you pick, and **held to the browser's own answer across a 192-geometry sweep** rather than to numbers someone chose
+- Configurable `behavior` (`'smooth' | 'instant' | 'auto'`), `block`, `inline` — the native alignment rules, `nearest` included, applied to the container you pick, and **held to the browser's own answer across a 192-geometry sweep on the vertical axis and a 36-row direction sweep on the horizontal one** rather than to numbers someone chose
+- Works in **RTL**, and in a pane whose direction differs from the target's: which edge `inline: 'start'` names follows the target's `direction`, the sign of the pane's `scrollLeft` follows the pane's
 - The `container` path reads what the browser reads: the target's CSS `scroll-margin`, the scroller's `scroll-padding`, its `clientTop`/`clientLeft` border, and any `transform: scale()` above it
 - Honours `prefers-reduced-motion`: the **default** `behavior` resolves to `'instant'` when the user has asked for less motion. An explicit `behavior` is never overridden
 - A target with no layout box (`v-show="false"`, `display: none`, detached) is a no-op on both paths — the scroller stays where the user left it
@@ -194,8 +199,10 @@ every trigger pattern in this file.
 
 ### Custom scroll container
 
-> [Custom scroll container](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/container) runs all four forms — element, selector,
-> `":scope <sel>"` and getter — against the same pane.
+> [Custom scroll container](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/container) runs every form — getter, element,
+> selector and `":scope <sel>"` — against the same pane, and has a second control that mounts the
+> row with the condition already true, so you can watch which spellings survive that and which one
+> quietly scrolls the page.
 
 By default, native `scrollIntoView` scrolls the *nearest scrollable ancestor* — which is often the page itself, not the chat pane or modal list you actually wanted to scroll. Pass `container` to pin a specific scrollable parent.
 
@@ -227,10 +234,69 @@ const activeId = ref<string | null>(null);
 
 `container` accepts:
 
-- **`HTMLElement` reference** — e.g. from `ref()` / `useTemplateRef()`.
+- **Getter `() => HTMLElement | null`** — called on every scroll. **Reach for this one when the
+  container is a template ref**; see below.
 - **CSS selector** — resolved via `document.querySelector` at scroll time.
 - **`:scope <sel>`** — resolved via `el.closest(<sel>)`, useful inside `v-for` where the same selector should walk up from the host.
-- **Getter `() => HTMLElement | null`** — called every scroll, so you can return a freshly resolved element without re-rendering.
+- **`HTMLElement` reference** — a live element, or `null` when you do not have one yet.
+
+#### Template refs: pass the getter, not the ref's value
+
+A binding value is computed while the host **renders**, and a parent assigns `ref="pane"` only
+*after* its children have rendered. So on the mount-time scroll — the one a `v-if` panel or a
+`v-for` row that is active on arrival depends on — `paneRef.value` is `null`, every time. What you
+do with that `null` decides what the directive does:
+
+```vue
+<script setup lang="ts">
+import { ref, useTemplateRef } from "vue";
+import type { VScrollIntoViewOptions } from "@ozjsey/v-scroll-into-view";
+
+const active = ref(true);
+const paneRef = useTemplateRef<HTMLElement>("pane");
+
+// ✅ resolved at scroll time, inside the animation frame, after refs are assigned
+const good = (): VScrollIntoViewOptions => ({
+  condition: active.value,
+  container: () => paneRef.value,
+});
+
+// ⚠️ `null` on the first render: nothing scrolls, and it says so in the console
+const warns = (): VScrollIntoViewOptions => ({
+  condition: active.value,
+  container: paneRef.value,
+});
+
+// ❌ `undefined` means NO container: native `scrollIntoView` runs and moves the page
+const trap = (): VScrollIntoViewOptions => ({
+  condition: active.value,
+  container: paneRef.value ?? undefined,
+});
+</script>
+
+<template>
+  <div ref="pane" style="height: 400px; overflow-y: auto">
+    <div v-scroll-into-view="good()">…</div>
+  </div>
+</template>
+```
+
+**Build the options in `<script>`, and call the function from the template** — as above. A ref read
+inside a template expression is *already unwrapped*, so `paneRef.value` written there is `undefined`
+rather than the element, and `() => paneRef.value` written there is a getter that returns
+`undefined` forever. Both land on the native path, silently, which is the same failure by a
+different route.
+
+The third one is the trap, and until 1.3.1 the types insisted on it: `ContainerRef` had no `null`
+arm, so `container: paneRef.value` did not compile and the spelling that did compile silently fell
+back to the native path — scrolling every ancestor including the document, which is the one thing
+`container` exists to prevent. Since 1.3.1 `null` is part of `ContainerRef`, and a `container` key
+whose value is `undefined` warns rather than going quietly.
+
+Omitting the key entirely is still the way to say "no container", and is not warned about — a
+conditional container is `{ ...base, ...(pane && { container: pane }) }`, not
+`{ container: pane ?? undefined }`. The directive cannot tell a deliberate `undefined` from an
+accidental one, so it says so either way.
 
 `container` must be an **ancestor** of the element it is given to, and setting it opts out of
 native `scrollIntoView` entirely — there is no fallback, which is what makes it always win, and
@@ -239,10 +305,16 @@ the console, in a sentence you can paste into a search box:
 
 | What happened | What the directive does |
 |---|---|
-| Resolves to `null`, or to a detached element | Nothing scrolls. Warns once. |
-| Resolves to an element that is not an ancestor of the host | Nothing scrolls. Warns once, and names `:scope`. |
-| Resolves to an element with no scrollable overflow | Warns once, then scrolls it anyway (`scrollTo` clamps to 0). |
-| Host is in a vertical writing mode | Warns once: `block`/`inline` swap axes there and the container path scrolls the horizontal one. Drop `container` and let the browser resolve the axes. |
+| Resolves to `null`, or to a detached element | Nothing scrolls. Warns. |
+| Resolves to an element that is not an ancestor of the host | Nothing scrolls. Warns, and names `:scope`. |
+| Resolves to an element whose `overflow` can never scroll | Warns, then scrolls it anyway (`scrollTo` clamps to 0). A pane with `overflow: auto` that simply has not filled up yet is **not** this case and is not warned about. |
+| Is `<body>` | Warns, and names the actual document scroller: `container: 'html'`. |
+| Is present but `undefined` | Falls back to native `scrollIntoView`, which is what `undefined` means — but warns, because it is usually `paneRef.value ?? undefined`. |
+| Host is in a vertical writing mode | Warns: `block`/`inline` swap axes there and the container path scrolls the horizontal one. Drop `container` and let the browser resolve the axes. |
+
+Each sentence is said **once per element**. A second row with the same mistake gets its own line —
+through 1.3.0 the latch was one global set of strings, so the first element to reach a message spent
+it for the session and every broken row after it was silent again.
 
 The second row is the one that bites in a `v-for` of panes: a plain CSS selector is
 `document.querySelector`, which returns the **first** match in the whole document, so every row in
@@ -359,11 +431,23 @@ sticky header keeps working when you add `container`. These two are now the same
 <div v-scroll-into-view="{ block: 'start', container: '#pane' }" style="scroll-margin-top: 64px">…</div>
 ```
 
-**Writing modes.** `block` and `inline` are logical, and the container path resolves them against
-the target's computed `direction`: in an RTL list `inline: 'start'` is the **right** edge, and
-`scrollLeft` runs `0 … -max`, both of which it handles. A *vertical* writing mode swaps the axes
-entirely and is not supported on the `container` path — it warns once and asks you to drop
-`container` so the browser can resolve the axes itself.
+**Direction is two facts, not one.** `block` and `inline` are logical, so the container path has to
+read `direction` twice, off two different elements:
+
+- **which physical edge `inline: 'start'` names** comes from the **target**. In an RTL list it is
+  the *right* edge — and Chrome does that even for an RTL card inside an LTR rail, which is what
+  `dir="auto"` on user-generated text produces. Measured, not assumed.
+- **the sign of `scrollLeft`** comes from the **container**. An RTL scroller runs `0 … -max` and an
+  LTR one runs `0 … +max`, whatever language is written inside it.
+
+1.3.0 read one flag, off the target, and used it for both jobs, so a mixed-direction pane clamped a
+positive destination into a negative range and landed on `scrollLeft 0` — every alignment, every
+time — while a *vertical-only* scroll in the same pane dragged `scrollLeft` back to 0 with it.
+Fixed in 1.3.1, and held there by
+[the direction sweep](https://ozjsey.github.io/npm-portfolio-playground/#v-scroll-into-view/direction).
+
+A *vertical* writing mode swaps the axes entirely and is not supported on the `container` path — it
+warns and asks you to drop `container` so the browser can resolve the axes itself.
 
 ### Pairing with `focus()`
 
@@ -502,7 +586,7 @@ SSR-safe: `target: null`, getters that throw, or `document === undefined` are al
 | `block` | `ScrollLogicalPosition` | `'nearest'` | Vertical alignment: `'start'`, `'center'`, `'end'`, or `'nearest'`. |
 | `inline` | `ScrollLogicalPosition` | `'nearest'` | Horizontal alignment: `'start'`, `'center'`, `'end'`, or `'nearest'`. |
 | `always` | `boolean` | `false` | If `true`, re-scrolls on every truthy update — not just `false` → `true` transitions. |
-| `container` | `ContainerRef` | — | Scrollable **ancestor** to scroll, and the outermost one moved — scrollers between it and the target are scrolled too. `HTMLElement`, CSS selector, `:scope <sel>` (closest), or getter. Resolves at scroll time; a non-ancestor, a detached element or `null` warns once and scrolls nothing. |
+| `container` | `ContainerRef` | — | Scrollable **ancestor** to scroll, and the outermost one moved — scrollers between it and the target are scrolled too. A getter (best for template refs), a CSS selector, `:scope <sel>` (closest), an `HTMLElement`, or `null`. Resolves at scroll time; a non-ancestor, a detached element or `null` warns and scrolls nothing, with no native fallback. Setting it to `undefined` means "no container" and does fall back — which is why that also warns. |
 | `offset` | `{ top?: number; left?: number }` | — | Per-side override of the target's CSS `scroll-margin`, on both paths. Applies fully to `'start'`, half to `'center'`, not at all to `'end'`. `{ top: 0 }` removes a stylesheet gap. On `'nearest'` the gap is dropped rather than clipping a target too big to fit under it. |
 
 When a plain boolean is passed (`v-scroll-into-view="true"`), it is equivalent to `{ condition: true }`. When the directive has no value (`v-scroll-into-view`), condition defaults to `true`.
@@ -521,7 +605,7 @@ they take the options branch, where a missing `condition` resolves to `true`. `v
 | `DIRECTIVE_NAME` | `'scroll-into-view'` | The conventional Vue directive name (used by the plugin and any custom registration). |
 | `VScrollIntoViewOptions` | Type | Options accepted by a directive binding. |
 | `UseScrollIntoViewOptions` | Type | What the composable accepts — the above minus `condition` and `always`, which only mean something to a directive. |
-| `ContainerRef` | Type | `HTMLElement \| string \| () => HTMLElement \| null` — every form the `container` option takes. |
+| `ContainerRef` | Type | `HTMLElement \| string \| (() => HTMLElement \| null) \| null` — every form the `container` option takes. The trailing `null` arm is new in 1.3.1: `container: paneRef.value` is the natural spelling and it now compiles. |
 | `ScrollIntoViewOptions` | Type (deprecated alias) | Re-exported as an alias for v1.0.x consumers. Planned for removal in v2. |
 | `ScrollIntoViewState` | Type | `'idle' \| 'pending'` — value of `data-scroll-into-view-state` and `state` ref. |
 | `UseScrollIntoViewParams` | Type | Parameter shape for the composable. |

@@ -14,5 +14,11 @@
     "forceConsistentCasingInFileNames": true,
     "inlineSources": true
   },
-  "include": ["vScrollIntoView.ts"]
+  // The test files are in here, not just the entry, because they are where the
+  // public TYPES get exercised: SIV-6 #2 was a type defect (`ContainerRef` had
+  // no `null` arm, so the only spelling that behaved correctly was the one
+  // TypeScript rejected), and a type defect is invisible to vitest, which
+  // strips types rather than checking them. `pnpm typecheck:libs` in the
+  // playground runs exactly this config.
+  "include": ["vScrollIntoView.ts", "vScrollIntoView.test.ts", "vScrollIntoView.ssr.test.ts", "playground.smoke.test.ts"]
 }
