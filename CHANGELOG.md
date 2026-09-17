@@ -11,6 +11,13 @@ dates, not release dates:** `registry.npmjs.org` holds only 1.2.0 (2026-09-13T13
 `v-scroll-into-view` name was never this package's. From 1.2.0 down, every heading date below is the
 registry's publish time.
 
+## 1.3.3 — 2026-09-18
+
+Documentation only; no code change. The README is cut to a landing page — problem, solution,
+install, a couple of usage examples — because the playground now carries the reference: every
+option driven in a real browser rather than described in a table. Claims that could not be
+verified against the source were deleted rather than carried across.
+
 ## [1.3.2] — 2026-09-17
 
 A one-line `package.json` fix, and the line was a false statement about which Vue versions this
