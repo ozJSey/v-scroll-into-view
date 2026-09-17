@@ -5,7 +5,11 @@ All notable changes to `v-scroll-into-view`.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [semver](https://semver.org/spec/v2.0.0.html). Entries before 1.2.0 are reconstructed from
 `PROGRESS.md` and the source's own notes — this file starts at the point where the package began
-keeping one, and says so rather than inventing detail it cannot source.
+keeping one, and says so rather than inventing detail it cannot source. **Their dates are work
+dates, not release dates:** `registry.npmjs.org` holds only 1.2.0 (2026-09-13T13:52:57Z), 1.3.0
+(2026-09-14T10:02:02Z) and 1.3.1 (2026-09-14T22:12:23Z) under the `@ozjsey` scope, and the unscoped
+`v-scroll-into-view` name was never this package's. From 1.2.0 down, every heading date below is the
+registry's publish time.
 
 ## [1.3.1] — 2026-09-14
 
@@ -91,7 +95,7 @@ to card 15: two identical rails, one moved by this package and one by the browse
   usually does overflow, it is simply not the thing that scrolls. The message now names the document
   element, and `container: 'html'` is exempt from the warning entirely.
 
-## [1.3.0] — 2026-09-13
+## [1.3.0] — 2026-09-14
 
 The `container` path is the only reason to install this over native `scrollIntoView`, and it was
 the part that disagreed with native. A blind re-audit (SIV-4) measured three divergences **in the
@@ -224,7 +228,7 @@ match. The new cases cover the border, the scale factor, RTL, `scroll-margin`, `
 (including percentages), the scroller chain, the re-armed edge, each warning, and the in-flight
 destination.
 
-## [1.2.0] — 2026-09-07
+## [1.2.0] — 2026-09-13
 
 Three defects found by an independent audit that drove the library in a real browser and in a
 clean Vite consumer app. All three were invisible to the 236 unit tests because jsdom implements
