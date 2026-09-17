@@ -11,6 +11,73 @@ dates, not release dates:** `registry.npmjs.org` holds only 1.2.0 (2026-09-13T13
 `v-scroll-into-view` name was never this package's. From 1.2.0 down, every heading date below is the
 registry's publish time.
 
+## [1.3.2] — 2026-09-17
+
+A one-line `package.json` fix, and the line was a false statement about which Vue versions this
+package runs on (PEER-1). Nothing in the runtime changed, and that is checked rather than
+asserted: rebuilt from the HEAD source and from this one, `dist/vScrollIntoView.min.js` hashes
+`55ab6573…` both times and `dist/vScrollIntoView.min.cjs` hashes `335ef6d7…` both times. The only
+source edit is a comment, and the comment was wrong.
+
+### Fixed
+
+- **`peerDependencies.vue` said `^3.0.0`, and no 3.0.x or 3.1.x install of this package has ever
+  worked.** It now says `^3.2.0`. This corrects a false claim — it withdraws no platform, because
+  the platform it named was never reachable. `src/use-scroll-into-view.ts:6` imports
+  `getCurrentScope` and `onScopeDispose`; both arrived in **Vue 3.2.0**. Measured against the
+  published Vue packages rather than read out of a changelog:
+
+  ```
+  vue 3.0.11  getCurrentScope=undefined onScopeDispose=undefined effectScope=undefined
+  vue 3.1.5   getCurrentScope=undefined onScopeDispose=undefined effectScope=undefined
+  vue 3.2.0   getCurrentScope=function  onScopeDispose=function  effectScope=function
+  ```
+
+  What the old range bought a consumer, run against the 1.3.1 tarball npm serves today:
+
+  ```
+  $ npm install vue@3.1.5 @ozjsey/v-scroll-into-view@1.3.1
+  added 15 packages in 288ms                       ← npm raises nothing
+  $ node -e "import('@ozjsey/v-scroll-into-view')"
+  SyntaxError: Named export 'getCurrentScope' not found.
+  ```
+
+  With `^3.2.0` the same install is refused up front — `npm error ERESOLVE ... peer vue@"^3.2.0"
+  from @ozjsey/v-scroll-into-view@1.3.2` — instead of failing later at the import. Forced past that
+  refusal with `--legacy-peer-deps`, 1.3.2 throws the same `SyntaxError`, which is the negative
+  control for the floor: the range is now exactly as wide as the package.
+
+  On the CJS entry the break is quieter and later: `require()` succeeds on 3.1.5 and the first
+  `useScrollIntoView()` call throws `TypeError: (0 , g.getCurrentScope) is not a function`.
+
+  Certified on the built tarball, not on the source tree: `vue@3.2.0` + `npm pack` output →
+  `import` succeeds, exporting `DIRECTIVE_NAME, ScrollIntoViewPlugin, default, useScrollIntoView,
+  vScrollIntoView`.
+
+- **A comment in shipped source said `getCurrentScope()` is "available in Vue 3.0+".** It is not,
+  and this source is read and copied more often than it is installed.
+  `src/use-scroll-into-view.ts` now names 3.2.0 and says what was checked to get there.
+
+### Changed
+
+- **The Vue test matrix now runs the floor instead of a version above it.** The low rung was
+  `vue3_3@3.3.13` while the API it was supposedly covering for landed in 3.2.0, so it could not
+  have caught this. It is now `vue_floor`, pinned to exactly `vue@3.2.0` — pinned rather than
+  `^3.2.0`, which a fresh install resolves to 3.5.x, quietly making the low rung a copy of the high
+  one. The rung can fail: pointed at 3.1.5 it reddens 29 of its 167 tests — 26 of the 146 in
+  `vScrollIntoView.test.ts` and 3 of the 21 in `playground.smoke.test.ts`, which are the cases that
+  reach `useScrollIntoView`. 28 die on `TypeError: getCurrentScope is not a function`; the 29th on
+  `TypeError: effectScope is not a function`, the test file's own `effectScope` import, which is a
+  3.2.0 export too.
+- **`vitest.workspace.ts` no longer claims that matrix proves the peer range.** It cannot: Vitest's
+  SSR transform rewrites named imports to property reads, so an export the linked Vue lacks arrives
+  as `undefined` rather than throwing. Probed on the 3.2.0 rung, a file doing
+  `import { useTemplateRef } from 'vue'` — a 3.5 API absent from 3.2.0 — loaded anyway and logged
+  `useTemplateRef=undefined`. That is not hypothetical here: `playground.smoke.test.ts:37` imports
+  `useTemplateRef` and its 21 tests pass on the 3.2.0 rung. Only installing the packed tarball
+  against a floor-version Vue tests importability, and the comment now says so.
+- README states the floor in the Install section.
+
 ## [1.3.1] — 2026-09-14
 
 A blind certification of the **published 1.3.0 tarball** (SIV-6) — the certifier unpacked it,

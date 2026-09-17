@@ -51,7 +51,7 @@ A Vue 3 directive that calls `Element.scrollIntoView()` when a boolean condition
 npm install @ozjsey/v-scroll-into-view
 ```
 
-Vue 3 is a peer dependency — it won't be bundled.
+Vue 3 is a peer dependency — it won't be bundled. **Vue 3.2.0 or newer is required**: `useScrollIntoView` calls `getCurrentScope()` / `onScopeDispose()`, which Vue 3.2.0 added and 3.1.x does not export.
 
 ## Register
 

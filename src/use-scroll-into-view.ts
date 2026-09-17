@@ -131,10 +131,12 @@ export function useScrollIntoView(params: UseScrollIntoViewParams): UseScrollInt
 
   // Only register cleanup when called inside an active effect scope. Avoids
   // Vue's "no active effect scope" warning when the composable is invoked
-  // outside setup() (unit tests, imperative code). `getCurrentScope()` is
-  // available in Vue 3.0+; the `failSilently` second arg was only added in
-  // 3.5, so guarding manually keeps the library quiet across the supported
-  // peer-dependency range.
+  // outside setup() (unit tests, imperative code). `getCurrentScope()` and
+  // `onScopeDispose()` landed in Vue 3.2.0 — checked against the published
+  // packages, not the docs: 3.1.5 exports neither — which is what sets this
+  // package's peer floor at `^3.2.0`. `onScopeDispose`'s `failSilently` second
+  // arg came later still, in 3.5, so guarding manually keeps the library quiet
+  // across the whole supported range.
   if (getCurrentScope()) {
     onScopeDispose(() => {
       if (pendingRaf !== undefined) {
