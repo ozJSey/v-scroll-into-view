@@ -3,7 +3,10 @@
 **Reactive scroll-into-view for Vue 3** — scrolls when a condition turns true, into the container
 you pick, with the gap your sticky header needs.
 
-[![npm](https://img.shields.io/npm/v/@ozjsey/v-scroll-into-view)](https://www.npmjs.com/package/@ozjsey/v-scroll-into-view)
+[![npm](https://img.shields.io/npm/v/@ozjsey/v-scroll-into-view.svg)](https://www.npmjs.com/package/@ozjsey/v-scroll-into-view)
+![license MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![gzipped 3.39 KiB](https://img.shields.io/badge/gzipped-3.39%20KiB-blue.svg)
+![dependencies 0](https://img.shields.io/badge/dependencies-0-blue.svg)
 
 ## The problem
 
