@@ -11,6 +11,26 @@ dates, not release dates:** `registry.npmjs.org` holds only 1.2.0 (2026-09-13T13
 `v-scroll-into-view` name was never this package's. From 1.2.0 down, every heading date below is the
 registry's publish time.
 
+## 1.3.4 — 2026-09-19
+
+Documentation only; no code change. One sentence in the README was false.
+
+### Fixed
+
+- **The `focus()` bullet claimed the directive and the browser "disagree by more than 80px".**
+  They do disagree, and for the reason given — the browser's focus scroll lands first, and
+  `block: 'nearest'` then correctly has nothing left to do, so the resting position is the
+  browser's. But the figure was wrong and was never going to be right: measured in Chrome on the
+  playground's card, the two land 78px apart, and the gap is a function of the viewport and the
+  card's own filler height, not of this package. The bullet now describes the mechanism and leaves
+  the number to the card, which prints it.
+
+  Found by driving the published artifact on the live documentation site rather than by reading
+  the source. The card meant to demonstrate this was itself not demonstrating it — it called
+  `focus()` in the same frame as the condition flip, so which scroll won was a race, and in a real
+  browser the directive won and all three modes of its control rested on the same pixel. That is
+  fixed in the playground, not here; no code in this package changed.
+
 ## 1.3.3 — 2026-09-18
 
 Documentation only; no code change. The README is cut to a landing page — problem, solution,
