@@ -10,8 +10,8 @@ you pick, with the gap your sticky header needs.
 
 ## The problem
 
-By default, native `scrollIntoView` scrolls the *nearest scrollable ancestor* — which is often the
-page itself, not the chat pane or modal list you actually wanted to scroll. It is imperative, so
+By default, native `scrollIntoView` scrolls *every scrollable ancestor* — so the page itself moves
+too, not just the chat pane or modal list you actually wanted to scroll. It is imperative, so
 keeping "the active row is visible" true costs a watcher, a frame's wait, and a guard so it does not
 re-scroll on every render that changed nothing. And the heading it lands on slides under your
 sticky header.

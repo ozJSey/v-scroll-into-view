@@ -31,6 +31,13 @@ Documentation only; no code change. One sentence in the README was false.
   browser the directive won and all three modes of its control rested on the same pixel. That is
   fixed in the playground, not here; no code in this package changed.
 
+- **"Native `scrollIntoView` scrolls the *nearest scrollable ancestor*"** — it scrolls **every**
+  scrollable ancestor, and this package says so everywhere else: `scrollers.ts` opens with "Native
+  `scrollIntoView` scrolls EVERY scrollable ancestor", `execute-scroll.ts` says it "walks the whole
+  chain", and the README's own Usage section says "exactly as native walks the chain". The practical
+  consequence the opening reached for — the page moves when you wanted the pane to — is correct; the
+  mechanism it named was not, and it was the first sentence under "The problem".
+
 ## 1.3.3 — 2026-09-18
 
 Documentation only; no code change. The README is cut to a landing page — problem, solution,
